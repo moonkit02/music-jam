@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>music-jam</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0b0b; --panel:#0f0f0f; --hover:#ffffff14; --line:#232323; --sub:#aaa; --red:#f00; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.4 "Roboto", system-ui, sans-serif; background: var(--bg); color: #fff;
+    display: grid; grid-template-rows: 64px 1fr 72px; height: 100vh; overflow: hidden;
+  }
+  button { font: inherit; color: #fff; background: none; border: 0; cursor: pointer; }
+  input[type=text] { font: inherit; }
+
+  /* top bar */
+  .topbar { display: flex; align-items: center; gap: 20px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+  .logo { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; white-space: nowrap; }
+  .logo .dot { width: 24px; height: 24px; border-radius: 50%; background: var(--red); display: grid; place-items: center; }
+  .logo .dot::after { content:""; width:0;height:0;border-left:8px solid #fff;border-top:5px solid transparent;border-bottom:5px solid transparent;margin-left:2px; }
+  .search { flex: 1; max-width: 640px; margin: 0 auto; position: relative; }
+  .search input { width: 100%; padding: 10px 14px 10px 40px; border-radius: 20px; border: 1px solid #303030; background: #121212; color: #fff; }
+  .search::before { content:"🔍"; position:absolute; left:14px; top:50%; transform:translateY(-50%); opacity:.5; }
+  #users { color: #8be9a6; white-space: nowrap; }
+
+  /* main 3 columns */
+  .main { display: grid; grid-template-columns: 240px 1fr 340px; min-height: 0; }
+  nav { border-right: 1px solid var(--line); padding: 12px 8px; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+  nav a, nav button.navitem { display: flex; align-items: center; gap: 16px; padding: 10px 12px; border-radius: 10px; color: #fff; text-decoration: none; font-weight: 500; text-align: left; width: 100%; }
+  nav a:hover, nav button.navitem:hover { background: var(--hover); }
+  nav .sep { height: 1px; background: var(--line); margin: 10px 4px; }
+  nav .newbtn { border: 1px solid #333; justify-content: center; }
+  nav .roommeta { padding: 8px 12px; color: var(--sub); font-size: 12px; }
+  nav .roommeta code { color: #fff; }
+
+  .stage { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 24px; min-width: 0; }
+  .art { width: min(46vh, 440px); aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #1a1a1a; box-shadow: 0 8px 40px #000a; }
+  .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .art.empty { display: grid; place-items: center; color: #555; text-align: center; padding: 20px; }
+  .nowmeta { text-align: center; max-width: min(46vh, 440px); }
+  .nowmeta .t { font-size: 20px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nowmeta .a { color: var(--sub); margin-top: 2px; }
+  .mute-controls { display: none; gap: 10px; }
+  .mute-controls button { padding: 8px 14px; border-radius: 20px; border: 1px solid #333; background: #1a1a1a; color: #ddd; }
+  .mute-controls button:hover { background: var(--hover); }
+  .mute-controls button.on { background: var(--red); border-color: var(--red); color: #fff; }
+
+  /* right panel */
+  .side { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; position: relative; z-index: 6; background: var(--bg); }
+  .section-h { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--sub); font-weight: 600; padding: 12px 16px 6px; border-top: 1px solid var(--line); display: flex; align-items: baseline; gap: 8px; }
+  .side .section-h:first-child { border-top: 0; }
+  .section-h .hint { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 11px; color: #666; }
+  #queuepane { flex: 1 1 0; overflow-y: auto; min-height: 60px; }
+  #queue { list-style: none; margin: 0; padding: 8px; }
+  #queue li { display: flex; align-items: center; gap: 12px; padding: 8px; border-radius: 8px; }
+  #queue li:hover { background: var(--hover); }
+  #queue li.now { background: #ffffff10; }
+  #queue img { width: 48px; height: 48px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; background:#222; }
+  #queue .meta { min-width: 0; }
+  #queue .meta .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #queue .meta .a { color: var(--sub); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .empty-note { color: #666; padding: 20px; text-align: center; }
+  .subtabs { display: flex; gap: 16px; }
+  .subtab { color: var(--sub); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; padding-bottom: 4px; border-bottom: 2px solid transparent; }
+  .subtab.on { color: #fff; border-color: #fff; }
+  #chatpane.hidden, #activitypane.hidden { display: none; } /* ID beats .hidden, so restate */
+  #activitypane { flex: 1 1 0; overflow-y: auto; min-height: 80px; padding: 8px 14px; }
+  #activity { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  #activity .act { color: #ccc; }
+  #activity .ts { color: #666; font-variant-numeric: tabular-nums; margin-right: 6px; }
+  #activity .det { color: var(--sub); }
+  #chatpane { flex: 1 1 0; display: flex; flex-direction: column; min-height: 80px; }
+  #queue li[data-i] { cursor: grab; }
+  #queue li.dragging { opacity: .4; }
+  #queue li.drop-target { box-shadow: inset 0 3px 0 var(--red); }             /* insertion line above this row */
+  #queuepane.drop-end #queue li:last-child { box-shadow: inset 0 -3px 0 var(--red); } /* insert after the last row */
+  /* floating clone that sinks at the cursor when a song is dragged out */
+  .sink-ghost { position: fixed; z-index: 90; pointer-events: none; display: flex; align-items: center; gap: 12px;
+    padding: 8px; border-radius: 8px; background: #1a1a1a; box-shadow: 0 10px 34px #000b;
+    transition: transform .5s cubic-bezier(.4,0,1,1), opacity .5s ease; }
+  .sink-ghost.sinking { transform: scale(.28) translateY(140px); opacity: 0; }
+  .sink-ghost img { width: 48px; height: 48px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; }
+  .sink-ghost .meta { min-width: 0; }
+  .sink-ghost .meta .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sink-ghost .meta .a { color: var(--sub); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* red ring appears only while the dragged song is OUTSIDE the pane (release = remove) */
+  #queuepane { transition: box-shadow .1s ease; }
+  body.out-of-list #queuepane { box-shadow: inset 0 0 0 2px rgba(255,45,45,.7), inset 0 0 28px rgba(255,45,45,.28); }
+  #chat { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; }
+  #chat b { margin-right: 6px; } /* per-user color set inline */
+  .chatbar { padding: 10px; border-top: 1px solid var(--line); }
+  .chatbar input { width: 100%; padding: 9px 12px; border-radius: 18px; border: 1px solid #303030; background: #121212; color: #fff; }
+
+  /* bottom transport */
+  .transport { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; padding: 0 16px; border-top: 1px solid var(--line); background: #030303; }
+  .np { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .np img { width: 48px; height: 48px; border-radius: 4px; object-fit: cover; background:#222; }
+  .np .t { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .np .a { color: var(--sub); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .center { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .btns { display: flex; align-items: center; gap: 20px; }
+  .btns button { font-size: 18px; opacity: .9; }
+  .btns .play { width: 40px; height: 40px; border-radius: 50%; background: #fff; color: #000; font-size: 18px; display: grid; place-items: center; }
+  .scrub { display: flex; align-items: center; gap: 8px; width: min(38vw, 520px); color: var(--sub); font-size: 12px; }
+  .scrub input, #vol { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: #444; outline: none; }
+  .scrub input { flex: 1; }
+  .scrub input::-webkit-slider-thumb, #vol::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; border-radius:50%; background:#fff; cursor:pointer; }
+  .right-tools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; color: var(--sub); }
+  #vol { width: 90px; }
+  .hidden-player { position: absolute; width: 320px; height: 180px; left: -9999px; top: -9999px; overflow: hidden; }
+
+  /* nav extras */
+  .joinrow { display: flex; gap: 6px; padding: 4px 4px 0; }
+  .joinrow input { flex: 1; min-width: 0; padding: 9px 10px; border-radius: 10px; border: 1px solid #333; background: #121212; color: #fff; }
+  .joinrow button { padding: 0 14px; border-radius: 10px; border: 1px solid #333; }
+  .joinrow button:hover { background: var(--hover); }
+  .bigcode { display: block; padding: 4px 12px 8px; font-size: 26px; letter-spacing: 4px; color: #fff; }
+  .nickrow { display: flex; align-items: center; gap: 8px; margin: 4px 12px; }
+  .nickdot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; background: #888; box-shadow: 0 0 6px currentColor; }
+  .nickinput { flex: 1; min-width: 0; padding: 9px 10px; border-radius: 10px; border: 1px solid #333; background: #121212; color: #fff; }
+  .userlist { list-style: none; margin: 4px 0; padding: 0 8px; overflow-y: auto; flex: 1 1 0; min-height: 40px; }
+  .userlist li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: #ddd; font-size: 13px; }
+  .userlist li::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--uc, #8be9a6); flex: 0 0 auto; }
+
+  /* audio gate */
+  #gate { position: fixed; inset: 0; z-index: 100; background: #000c; backdrop-filter: blur(6px); display: grid; place-items: center; text-align: center; }
+  #gate .gate-title { font-size: 28px; font-weight: 700; margin-bottom: 20px; }
+  #gatebtn { font-size: 18px; padding: 16px 32px; border-radius: 30px; background: var(--red); font-weight: 600; }
+  #gatebtn:hover { filter: brightness(1.1); }
+  #gate .gate-sub { color: var(--sub); font-size: 13px; margin-top: 16px; }
+
+  @media (max-width: 900px) {
+    .main { grid-template-columns: 1fr; }
+    nav, .side { display: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="logo"><span class="dot"></span> music-jam</div>
+    <div class="search"><input id="url" type="text" placeholder="Paste a YouTube link or id to queue…" /></div>
+    <span id="users">0 listening</span>
+  </div>
+
+  <div class="main">
+    <nav>
+      <button class="navitem newbtn" id="newroom">＋ New room</button>
+      <div class="joinrow">
+        <input id="joinid" inputmode="numeric" maxlength="4" placeholder="Room #" />
+        <button id="joinbtn">Join</button>
+      </div>
+      <div class="sep"></div>
+      <div class="roommeta">Room</div>
+      <code id="roomid" class="bigcode">…</code>
+      <button class="navitem" id="share">🔗 Copy invite link</button>
+      <div class="sep"></div>
+      <div class="roommeta">Your nickname</div>
+      <div class="nickrow">
+        <span id="nickdot" class="nickdot"></span>
+        <input id="nick" class="nickinput" maxlength="24" />
+      </div>
+      <div class="sep"></div>
+      <div class="roommeta">In the room</div>
+      <ul id="userlist" class="userlist"></ul>
+    </nav>
+
+    <div class="stage">
+      <div class="art empty" id="art">Queue a track to start the jam</div>
+      <div class="nowmeta">
+        <div class="t" id="nowtitle">Nothing playing</div>
+        <div class="a" id="nowauthor"></div>
+      </div>
+      <div class="mute-controls" id="mutectl">
+        <button id="mutesong">🔇 Mute this song</button>
+        <button id="muteall">🔕 Mute until I unmute</button>
+      </div>
+    </div>
+
+    <aside class="side">
+      <div class="section-h">Up next <span class="hint">drag to reorder · drag out to remove</span></div>
+      <div id="queuepane"><ul id="queue"></ul></div>
+      <div class="section-h subtabs">
+        <button id="tab-chat" class="subtab on">Chat</button>
+        <button id="tab-activity" class="subtab">Activity</button>
+      </div>
+      <div id="chatpane">
+        <div id="chat"></div>
+        <div class="chatbar"><input id="chatinput" type="text" maxlength="300" placeholder="Say something…" /></div>
+      </div>
+      <div id="activitypane" class="hidden"><div id="activity"></div></div>
+    </aside>
+  </div>
+
+  <div class="transport">
+    <div class="np">
+      <img id="npart" alt="" style="display:none" />
+      <div style="min-width:0">
+        <div class="t" id="nptitle">—</div>
+        <div class="a" id="npauthor"></div>
+      </div>
+    </div>
+    <div class="center">
+      <div class="btns">
+        <button id="prev" title="Restart">⏮</button>
+        <button class="play" id="playpause">▶</button>
+        <button id="skip" title="Next">⏭</button>
+      </div>
+      <div class="scrub">
+        <span id="cur">0:00</span>
+        <input id="seek" type="range" min="0" max="1000" value="0" />
+        <span id="dur">0:00</span>
+      </div>
+    </div>
+    <div class="right-tools">🔊 <input id="vol" type="range" min="0" max="100" value="100" /></div>
+  </div>
+
+  <div class="hidden-player"><div id="yt"></div></div>
+
+  <div id="gate"><div><div class="gate-title">🎧 music-jam</div><button id="gatebtn">Tap to start the jam</button><div class="gate-sub">browsers need one tap before they'll play audio</div></div></div>
+
+<script type="module">
+import { parseVideoId, expectedTime } from "./lib.js";
+
+const $ = (id) => document.getElementById(id);
+const fmt = (s) => (isFinite(s) && s >= 0 ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}` : "0:00");
+const thumb = (id) => `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// per-user color: stable hash of the nickname → one of 8 palette entries
+const PALETTE = ["#7aa2ff", "#8be9a6", "#ff6b6b", "#ffd166", "#c792ea", "#4dd0e1", "#ff9e64", "#f78fb3"];
+const nameColor = (name) => {
+  let h = 0;
+  for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+};
+// roster is the single source of truth for colors; hash only if a name isn't in it
+let colorOf = {};
+const colorFor = (name) => colorOf[name] || nameColor(name);
+function updateNickDot() { $("nickdot").style.color = $("nickdot").style.background = colorFor(nick); }
+
+// ---- room + identity ----
+const newCode = () => String(Math.floor(1000 + Math.random() * 9000)); // 4 digits
+const params = new URLSearchParams(location.hash.slice(1));
+let room = params.get("room");
+if (!/^\d{4}$/.test(room || "")) { room = newCode(); location.hash = "room=" + room; } // 4 digits only
+$("roomid").textContent = room;
+
+// nickname (feature 3)
+let nick = localStorage.nick || (localStorage.nick = "guest-" + newCode());
+$("nick").value = nick;
+updateNickDot();
+$("nick").addEventListener("change", () => {
+  nick = ($("nick").value.trim() || "anon").slice(0, 24);
+  localStorage.nick = nick;
+  $("nick").value = nick;
+  updateNickDot();
+  send({ type: "hello", name: nick }); // update the roster
+});
+
+// join by code (feature 4)
+function joinRoom(code) {
+  code = String(code).replace(/\D/g, "").slice(0, 4);
+  if (code.length < 4) return;
+  location.hash = "room=" + code;
+  location.reload();
+}
+$("joinbtn").onclick = () => joinRoom($("joinid").value);
+$("joinid").addEventListener("keydown", (e) => e.key === "Enter" && joinRoom(e.target.value));
+
+// ---- server state (authoritative) ----
+let server = { videoId: null, title: null, author: null, playing: false, baseTime: 0, baseAt: Date.now(), queue: [] };
+let applyingRemote = false, scrubbing = false;
+// per-user mute (local only, never sent to others)
+let mutedAll = false;    // stays muted across songs until toggled back
+let mutedSongId = null;  // mute just this videoId; auto-clears when the song changes
+const effectiveMuted = () => mutedAll || (mutedSongId && mutedSongId === server.videoId);
+function applyMute() {
+  if (!ready || !player) return;
+  if (effectiveMuted()) player.mute();
+  else { player.unMute(); player.setVolume(+$("vol").value); }
+}
+function updateMuteUI() {
+  $("mutectl").style.display = server.videoId ? "flex" : "none";
+  $("mutesong").classList.toggle("on", !!mutedSongId && mutedSongId === server.videoId);
+  $("muteall").classList.toggle("on", mutedAll);
+}
+
+// ---- websocket ----
+let ws;
+function connect() {
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?room=${room}`);
+  ws.onopen = () => send({ type: "hello", name: nick }); // announce our nickname for the roster
+  ws.onmessage = (e) => handle(JSON.parse(e.data));
+  ws.onclose = () => setTimeout(connect, 1500);
+}
+const send = (o) => ws?.readyState === 1 && ws.send(JSON.stringify(o));
+connect();
+
+// roster order is identical for everyone, so this greedy assignment is consistent
+// across clients: each user takes the first still-unused color (hash only past 8).
+function renderUsers(names) {
+  names = names || [];
+  const used = new Set();
+  colorOf = {};
+  $("userlist").innerHTML = names
+    .map((n) => {
+      const c = PALETTE.find((p) => !used.has(p)) || nameColor(n);
+      used.add(c);
+      if (!(n in colorOf)) colorOf[n] = c;
+      return `<li style="--uc:${c}">${esc(n)}</li>`;
+    })
+    .join("");
+  updateNickDot(); // reflect our own assigned color
+}
+
+function handle(m) {
+  if (m.type === "users") { $("users").textContent = `${m.users} listening`; renderUsers(m.names); return; }
+  if (m.type === "chat") return addChat(m.name, m.text);
+  if (m.type === "activity") return addActivity(m.name, m.action, m.detail, m.at);
+  if (m.type === "state") {
+    server = { videoId: m.videoId, title: m.title, author: m.author, playing: m.playing, baseTime: m.time, baseAt: Date.now(), queue: m.queue };
+    renderQueue();
+    applyState();
+  }
+}
+
+// ---- YouTube player (audio only; iframe hidden) ----
+let player, ready = false;
+window.onYouTubeIframeAPIReady = () => {
+  player = new YT.Player("yt", {
+    height: "180", width: "320",
+    playerVars: { controls: 0, disablekb: 1, rel: 0, playsinline: 1 },
+    events: {
+      onReady: () => { ready = true; player.setVolume(+$("vol").value); applyState(); },
+      onStateChange: (e) => { if (e.data === YT.PlayerState.ENDED) send({ type: "next", videoId: server.videoId }); },
+    },
+  });
+};
+{ const s = document.createElement("script"); s.src = "https://www.youtube.com/iframe_api"; document.head.appendChild(s); }
+
+// Mirror server state onto the local player. Enforces play/pause on EVERY path,
+// so a fresh load / late joiner never autoplays past a paused room.
+function applyState() {
+  updateNowPlaying();
+  if (!ready || !player) return;
+  const want = expectedTime(server);
+
+  if (!server.videoId) { applyingRemote = true; try { player.stopVideo(); } catch {} return void setTimeout(() => (applyingRemote = false), 400); }
+
+  const loaded = player.getVideoData && player.getVideoData().video_id;
+  applyingRemote = true;
+  if (loaded !== server.videoId) {
+    mutedSongId = null; // new song → drop any "mute this song" so audio returns
+    if (server.playing) player.loadVideoById(server.videoId, want); // load autoplays
+    else player.cueVideoById(server.videoId, want);                 // cue does NOT autoplay
+  } else {
+    if (Math.abs(player.getCurrentTime() - want) > 1.2) player.seekTo(want, true);
+    if (server.playing) player.playVideo(); else player.pauseVideo();
+  }
+  applyMute();
+  setTimeout(() => (applyingRemote = false), 600);
+}
+
+// ---- UI tick: progress + ongoing drift correction ----
+setInterval(() => {
+  $("playpause").textContent = server.playing ? "⏸" : "▶";
+  if (!ready || !player || !server.videoId) return;
+  const dur = player.getDuration() || 0;
+  // While paused, show the frozen server position (never a running clock).
+  const cur = server.playing ? (player.getCurrentTime() || 0) : expectedTime(server);
+  if (!scrubbing) {
+    $("cur").textContent = fmt(cur);
+    $("dur").textContent = fmt(dur);
+    $("seek").value = dur ? Math.round((cur / dur) * 1000) : 0;
+  }
+  if (!applyingRemote && server.playing && Math.abs((player.getCurrentTime() || 0) - expectedTime(server)) > 1.5)
+    player.seekTo(expectedTime(server), true);
+}, 400);
+
+// ---- transport controls (all are shared actions) ----
+$("playpause").onclick = () => {
+  const t = player?.getCurrentTime?.() || 0;
+  send(server.playing ? { type: "pause", time: t } : { type: "play", time: t });
+};
+$("skip").onclick = () => send({ type: "next", videoId: server.videoId, manual: true });
+$("prev").onclick = () => send({ type: "seek", time: 0 });
+$("seek").oninput = () => (scrubbing = true);
+$("seek").onchange = () => {
+  const dur = player?.getDuration?.() || 0;
+  send({ type: "seek", time: ($("seek").value / 1000) * dur });
+  scrubbing = false;
+};
+$("vol").oninput = () => { if (!effectiveMuted()) player?.setVolume?.(+$("vol").value); };
+
+// per-user mute controls
+$("mutesong").onclick = () => {
+  mutedSongId = mutedSongId === server.videoId ? null : server.videoId; // toggle for current track
+  applyMute(); updateMuteUI();
+};
+$("muteall").onclick = () => {
+  mutedAll = !mutedAll;
+  applyMute(); updateMuteUI();
+};
+
+// ---- add / queue ----
+function add() {
+  const id = parseVideoId($("url").value);
+  if (!id) { $("url").value = ""; $("url").placeholder = "Couldn't find a video id in that…"; return; }
+  send({ type: "enqueue", videoId: id });
+  $("url").value = "";
+}
+$("url").addEventListener("keydown", (e) => e.key === "Enter" && add());
+
+function updateNowPlaying() {
+  const has = !!server.videoId;
+  $("art").className = has ? "art" : "art empty";
+  $("art").innerHTML = has ? `<img src="${thumb(server.videoId)}" alt="" />` : "Queue a track to start the jam";
+  $("nowtitle").textContent = has ? (server.title || server.videoId) : "Nothing playing";
+  $("nowauthor").textContent = has ? (server.author || "") : "";
+  $("npart").style.display = has ? "block" : "none";
+  if (has) $("npart").src = thumb(server.videoId);
+  $("nptitle").textContent = has ? (server.title || server.videoId) : "—";
+  $("npauthor").textContent = has ? (server.author || "") : "";
+  updateMuteUI();
+}
+
+let lastQueueLen = 0;
+function renderQueue() {
+  const rows = [];
+  if (server.videoId)
+    rows.push(`<li class="now"><img src="${thumb(server.videoId)}"><div class="meta"><div class="t">${esc(server.title || server.videoId)}</div><div class="a">${esc(server.author || "")} · now playing</div></div></li>`);
+  server.queue.forEach((q, i) =>
+    rows.push(`<li draggable="true" data-i="${i}" title="drag to reorder · drag out to remove"><img src="${thumb(q.videoId)}"><div class="meta"><div class="t">${esc(q.title)}</div><div class="a">${esc(q.author || "")}</div></div></li>`));
+  $("queue").innerHTML = rows.length ? rows.join("") : `<li class="empty-note">Nothing queued</li>`;
+  if (server.queue.length > lastQueueLen) $("queuepane").scrollTop = $("queuepane").scrollHeight; // follow newest
+  lastQueueLen = server.queue.length;
+}
+
+// ---- drag to reorder / drag out to remove (native HTML5 DnD; desktop/mouse) ----
+// Logic: "keep/arrange" = cursor inside the pane rect widened by a vertical
+// tolerance band (so arranging at the very top/bottom is easy). Anything else
+// (left into the app, or well past the band) = "remove" and turns red.
+let dragI = null;
+const qp = $("queuepane");
+const KEEP_PAD = 80; // px of top/bottom slack that still counts as arranging
+
+function inKeepZone(x, y) {
+  const r = qp.getBoundingClientRect();
+  return x >= r.left && x <= r.right && y >= r.top - KEEP_PAD && y <= r.bottom + KEEP_PAD;
+}
+// index in server.queue where a drop at height y lands
+function insertIndexAt(y) {
+  for (const li of qp.querySelectorAll("li[data-i]")) {
+    const b = li.getBoundingClientRect();
+    if (y < b.top + b.height / 2) return +li.dataset.i;
+  }
+  return server.queue.length;
+}
+function showLine(idx) {
+  qp.querySelectorAll(".drop-target").forEach((l) => l.classList.remove("drop-target"));
+  qp.classList.remove("drop-end");
+  const li = qp.querySelector(`li[data-i="${idx}"]`);
+  if (li) li.classList.add("drop-target"); else qp.classList.add("drop-end"); // insert after last
+}
+function clearLine() {
+  qp.querySelectorAll(".drop-target").forEach((l) => l.classList.remove("drop-target"));
+  qp.classList.remove("drop-end");
+}
+// Reset all drag visuals. Must run from drop too: rendering the list deletes the
+// drag source element, so the browser may never fire dragend.
+function endDrag() {
+  dragI = null;
+  document.body.classList.remove("dragging-song", "out-of-list");
+  clearLine();
+  qp.querySelectorAll("li.dragging").forEach((l) => l.classList.remove("dragging"));
+}
+
+qp.addEventListener("dragstart", (e) => {
+  const li = e.target.closest("li[data-i]"); if (!li) return;
+  dragI = +li.dataset.i;
+  li.classList.add("dragging");
+  document.body.classList.add("dragging-song");
+  e.dataTransfer.effectAllowed = "move";
+});
+
+// One document-level handler set. Accepting the drop everywhere also suppresses
+// the browser's snap-back animation on an "unaccepted" drop.
+document.addEventListener("dragover", (e) => {
+  if (dragI == null) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = "move";
+  const keep = inKeepZone(e.clientX, e.clientY);
+  document.body.classList.toggle("out-of-list", !keep);
+  if (!keep) { clearLine(); return; }
+  showLine(insertIndexAt(e.clientY));
+  const r = qp.getBoundingClientRect(), edge = 40; // edge auto-scroll
+  if (e.clientY < r.top + edge) qp.scrollTop -= 12;
+  else if (e.clientY > r.bottom - edge) qp.scrollTop += 12;
+});
+document.addEventListener("drop", (e) => {
+  if (dragI == null) return;
+  e.preventDefault();
+  if (!inKeepZone(e.clientX, e.clientY)) {
+    removeWithAnim(dragI, e.clientX, e.clientY);
+  } else {
+    let to = insertIndexAt(e.clientY);
+    const arr = server.queue.slice();
+    if (dragI < arr.length) {
+      const [item] = arr.splice(dragI, 1);
+      if (to > dragI) to -= 1; // account for the removed slot
+      arr.splice(to, 0, item);
+      server.queue = arr; renderQueue();
+      send({ type: "reorder", order: arr.map((x) => x.videoId) });
+    }
+  }
+  endDrag(); // dragend won't fire after we re-render, so clean up here
+});
+document.addEventListener("dragend", endDrag);
+// Safety net: if the red state ever lingers, clicking/tapping anywhere clears it.
+document.addEventListener("pointerdown", () => { if (dragI == null) endDrag(); });
+
+// Drop the row from the list at once, then float a clone that sinks at the cursor.
+function removeWithAnim(i, x, y) {
+  const li = qp.querySelector(`li[data-i="${i}"]`), item = server.queue[i];
+  if (!item) return;
+  const rect = li ? li.getBoundingClientRect() : { width: 260, height: 56 };
+
+  // commit the removal immediately (no in-list animation)
+  const arr = server.queue.slice(); arr.splice(i, 1);
+  server.queue = arr; renderQueue();
+  send({ type: "remove", index: i, videoId: item.videoId });
+
+  // floating ghost sinking from where the cursor released
+  const ghost = document.createElement("div");
+  ghost.className = "sink-ghost";
+  ghost.style.width = rect.width + "px";
+  ghost.style.left = (x - rect.width / 2) + "px";
+  ghost.style.top = (y - rect.height / 2) + "px";
+  ghost.innerHTML = `<img src="${thumb(item.videoId)}"><div class="meta"><div class="t">${esc(item.title)}</div><div class="a">${esc(item.author || "")}</div></div>`;
+  document.body.appendChild(ghost);
+  requestAnimationFrame(() => ghost.classList.add("sinking")); // next frame so the transition runs
+  const done = () => ghost.remove();
+  ghost.addEventListener("transitionend", done, { once: true });
+  setTimeout(done, 700);
+}
+
+// ---- chat ----
+function addChat(who, text) {
+  const el = document.createElement("div");
+  el.innerHTML = `<b style="color:${colorFor(who)}">${esc(who)}</b>${esc(text)}`;
+  $("chat").appendChild(el);
+  $("chat").scrollTop = $("chat").scrollHeight;
+}
+$("chatinput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.value.trim()) { send({ type: "chat", name: nick, text: e.target.value.trim() }); e.target.value = ""; }
+});
+
+// ---- activity feed + Chat/Activity swap ----
+function addActivity(who, action, detail, at) {
+  const ts = new Date(at || Date.now()).toTimeString().slice(0, 8); // HH:MM:SS
+  const el = document.createElement("div");
+  el.className = "act";
+  el.innerHTML = `<span class="ts">${ts}</span><b style="color:${colorFor(who)}">${esc(who)}</b> ${esc(action)}` +
+    (detail ? ` <span class="det">${esc(detail)}</span>` : "");
+  $("activity").appendChild(el);
+  $("activity").scrollTop = $("activity").scrollHeight;
+}
+function setBottom(t) {
+  $("tab-chat").classList.toggle("on", t === "chat");
+  $("tab-activity").classList.toggle("on", t === "activity");
+  $("chatpane").classList.toggle("hidden", t !== "chat");
+  $("activitypane").classList.toggle("hidden", t !== "activity");
+}
+$("tab-chat").onclick = () => setBottom("chat");
+$("tab-activity").onclick = () => setBottom("activity");
+
+// ---- room controls ----
+$("share").onclick = async () => {
+  await navigator.clipboard.writeText(location.href);
+  $("share").textContent = "✓ Copied!";
+  setTimeout(() => ($("share").textContent = "🔗 Copy invite link"), 1500);
+};
+$("newroom").onclick = () => { location.hash = "room=" + newCode(); location.reload(); };
+
+// ---- audio gate: browsers require a user gesture before playing sound (bugs 1 & 5) ----
+$("gatebtn").onclick = () => {
+  $("gate").style.display = "none";
+  if (ready && player) {
+    applyState(); // sets volume/mute via applyMute()
+    if (server.playing && server.videoId) { try { player.playVideo(); } catch {} } // in-gesture play unlocks audio
+    applyMute();
+  }
+};
+</script>
+</body>
+</html>
