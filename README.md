@@ -27,6 +27,11 @@ npm run dev        # wrangler dev, then open the printed localhost URL
 npx wrangler login
 npm run deploy
 ```
+or
+```bash
+brew install cloudflared
+cloudflared tunnel --url http://localhost:8787
+```
 
 Durable Objects use the SQLite storage backend (`new_sqlite_classes` in
 `wrangler.toml`), which works on the **free** Workers plan. First deploy applies
