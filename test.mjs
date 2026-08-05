@@ -1,6 +1,6 @@
 // Runnable check for the two pieces of non-trivial pure logic.
 // Run: node test.mjs
-import { parseVideoId, expectedTime } from "./public/lib.js";
+import { parseVideoId, parsePlaylistId, parsePlaylistVideoIds, cleanTrackTitle, parseLrc, activeLineIndex, pickBestLyric, lyricKey, parseLrclibId, expectedTime, capLog } from "./public/lib.js";
 import assert from "node:assert/strict";
 
 // --- parseVideoId ---
@@ -16,5 +16,60 @@ const now = 1_000_000;
 assert.equal(expectedTime({ videoId: "x", playing: false, baseTime: 30, baseAt: now - 5000 }, now), 30);
 assert.equal(expectedTime({ videoId: "x", playing: true, baseTime: 30, baseAt: now - 5000 }, now), 35);
 assert.equal(expectedTime({ videoId: null, playing: true, baseTime: 30, baseAt: now }, now), 0);
+
+// --- capLog (ring buffer for chat/activity history) ---
+const log = [];
+for (let i = 0; i < 5; i++) capLog(log, i, 3);
+assert.deepEqual(log, [2, 3, 4]); // keeps newest 3, drops oldest, preserves order
+assert.equal(capLog([], "a", 3).length, 1); // under cap: just appends
+
+// --- parsePlaylistId (real playlists only; skip mixes/radio) ---
+assert.equal(parsePlaylistId("https://www.youtube.com/playlist?list=PLabc123_-"), "PLabc123_-");
+assert.equal(parsePlaylistId("https://youtube.com/watch?v=dQw4w9WgXcQ&list=OLAK5uy_xyz"), "OLAK5uy_xyz");
+assert.equal(parsePlaylistId("https://youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ"), null); // mix
+assert.equal(parsePlaylistId("https://youtu.be/dQw4w9WgXcQ"), null); // no list
+assert.equal(parsePlaylistId(""), null);
+
+// --- parsePlaylistVideoIds (order, dedup, cap; precise shape then fallback) ---
+const page = '"playlistVideoRenderer":{"videoId":"aaaaaaaaaaa"}x"playlistVideoRenderer":{"videoId":"bbbbbbbbbbb"}x"playlistVideoRenderer":{"videoId":"aaaaaaaaaaa"}';
+assert.deepEqual(parsePlaylistVideoIds(page), ["aaaaaaaaaaa", "bbbbbbbbbbb"]); // order + dedup
+assert.deepEqual(parsePlaylistVideoIds('"videoId":"ccccccccccc"'), ["ccccccccccc"]); // fallback when no precise match
+assert.equal(parsePlaylistVideoIds(page, 1).length, 1); // cap
+
+// --- cleanTrackTitle ---
+assert.equal(cleanTrackTitle("Never Gonna Give You Up (Official Video)"), "Never Gonna Give You Up");
+assert.equal(cleanTrackTitle("Song [MV] feat. X"), "Song"); // trailing tag + bracket stripped
+assert.equal(cleanTrackTitle("曖昧ナ希望/氷雨"), "曖昧ナ希望/氷雨"); // non-latin untouched
+
+// --- parseLrc + activeLineIndex ---
+const lrc = parseLrc("[ar:Someone]\n[00:10.00] first\n[00:12.50] second\n[00:15.00]");
+assert.deepEqual(lrc, [{ t: 10, line: "first" }, { t: 12.5, line: "second" }, { t: 15, line: "" }]); // meta skipped, empty pause kept
+assert.equal(activeLineIndex(lrc, 5), -1);   // before first
+assert.equal(activeLineIndex(lrc, 11), 0);   // on first
+assert.equal(activeLineIndex(lrc, 13), 1);   // on second
+assert.equal(activeLineIndex(lrc, 99), 2);   // last
+
+// --- pickBestLyric (duration + native-script + variant scoring) ---
+const cands = [
+  { trackName: "Chained", duration: 186, syncedLyrics: "[00:01.00] Saiai wa" },            // romaji
+  { trackName: "Chained", duration: 186, syncedLyrics: "[00:01.00] 最愛は振りほどいた" },   // native JP
+  { trackName: "Chained (Instrumental)", duration: 186, syncedLyrics: "[00:01.00] 最愛は" }, // JP but instrumental
+  { trackName: "いらないもの - Chained", duration: 186, syncedLyrics: "[00:01.00] 最愛は" }, // JP, title mismatch
+];
+assert.equal(pickBestLyric(cands, "tatsuya kitani - chained", 186).syncedLyrics.includes("最愛"), true); // native wins over romaji
+assert.equal(pickBestLyric(cands, "tatsuya kitani - chained", 186).trackName, "Chained");               // plain, not instrumental/変
+// English song: no JP candidates, closest duration + title wins
+const eng = [
+  { trackName: "Never Gonna Give You Up", duration: 213, syncedLyrics: "[00:01.00] We're no strangers" },
+  { trackName: "Never Gonna Give You Up (Instrumental)", duration: 213, syncedLyrics: "[00:01.00] la la" },
+];
+assert.equal(pickBestLyric(eng, "never gonna give you up", 213).trackName, "Never Gonna Give You Up");
+
+// --- lyricKey + parseLrclibId (lyrics pin) ---
+assert.equal(lyricKey("Chained (Official Video)", "Tatsuya Kitani - Topic"), "chained|tatsuya kitani"); // cleaned + topic stripped
+assert.equal(parseLrclibId("https://lrclib.net/tracks/36317191"), "36317191");
+assert.equal(parseLrclibId("https://lrclib.net/api/get/36317191"), "36317191");
+assert.equal(parseLrclibId("36317191"), "36317191"); // bare id
+assert.equal(parseLrclibId("not a url"), null);
 
 console.log("ok");

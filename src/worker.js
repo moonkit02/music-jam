@@ -2,6 +2,14 @@
 // One Durable Object per room holds the authoritative playback state and fans
 // changes out to every connected client over WebSockets.
 
+import { capLog, parsePlaylistVideoIds, cleanTrackTitle, pickBestLyric, lyricKey, parseLrclibId } from "../public/lib.js";
+
+const LYRICS_UA = { "user-agent": "Vibin (+https://github.com/moonkit02/my-claude-skill)" };
+
+const PLAYLIST_CAP = 50; // max songs pulled from one playlist link
+
+const lobbyStub = (env) => env.LOBBY.get(env.LOBBY.idFromName("global"));
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -10,9 +18,69 @@ export default {
       const id = env.ROOM.idFromName(room);
       return env.ROOM.get(id).fetch(req);
     }
+    if (url.pathname === "/rooms") {
+      return lobbyStub(env).fetch("https://lobby/rooms"); // public room list for the landing page
+    }
+    if (url.pathname === "/lyrics") {
+      return handleLyrics(url, env);
+    }
+    if (url.pathname === "/lyrics/set" && req.method === "POST") {
+      const b = await req.json().catch(() => ({}));
+      const id = parseLrclibId(b.url || "");
+      const key = lyricKey(b.title || "", b.artist || "");
+      if (!id || key === "|") return Response.json({ ok: false }, { status: 400 });
+      await lobbyStub(env).fetch("https://lobby/override", { method: "POST", body: JSON.stringify({ key, trackId: id }) });
+      return Response.json({ ok: true, id });
+    }
     return new Response("not found", { status: 404 });
   },
 };
+
+// Keyless synced-lyrics lookup via LRCLIB, proxied here (no CORS, no key). If a user
+// has pinned a specific LRCLIB track for this title+artist, that wins; otherwise we
+// search and score. Edge-cached so listeners on the same track share one upstream hit.
+async function handleLyrics(url, env) {
+  const rawTitle = url.searchParams.get("title") || "";
+  const rawArtist = url.searchParams.get("artist") || "";
+  const title = cleanTrackTitle(rawTitle);
+  const artist = rawArtist.replace(/\s*-\s*topic\s*$/i, "").trim();
+  const dur = Number(url.searchParams.get("dur")) || 0;
+
+  // user pin (global) for this song, if any
+  let pinId = null;
+  try {
+    const o = await lobbyStub(env).fetch("https://lobby/override?key=" + encodeURIComponent(lyricKey(rawTitle, rawArtist)));
+    if (o.ok) pinId = (await o.json()).trackId || null;
+  } catch {}
+
+  const cache = caches.default;
+  const key = new Request("https://lyrics/v3?" + (pinId ? "id=" + pinId : url.searchParams.toString()));
+  const hit = await cache.match(key);
+  if (hit) return hit;
+
+  let body = { found: false };
+  try {
+    if (pinId) {
+      const r = await fetch(`https://lrclib.net/api/get/${pinId}`, { headers: LYRICS_UA });
+      if (r.ok) { const g = await r.json(); if (g.syncedLyrics) body = { found: true, synced: g.syncedLyrics, track: g.trackName, artist: g.artistName, pinned: true }; }
+    } else {
+      const q = encodeURIComponent([title, artist].filter(Boolean).join(" "));
+      const r = await fetch(`https://lrclib.net/api/search?q=${q}`, { headers: LYRICS_UA });
+      if (r.ok) {
+        const arr = await r.json();
+        const synced = Array.isArray(arr) ? arr.filter((x) => x.syncedLyrics) : [];
+        const best = pickBestLyric(synced, title.toLowerCase(), dur);
+        if (best) body = { found: true, synced: best.syncedLyrics, track: best.trackName, artist: best.artistName };
+      }
+    }
+  } catch {}
+  // short client cache so a newly-set pin propagates quickly; edge dedups within it
+  const resp = Response.json(body, { headers: { "cache-control": "public, max-age=300" } });
+  await cache.put(key, resp.clone());
+  return resp;
+}
+
+const LOG_CAP = 50; // per-room ring buffer for chat + activity replayed to joiners
 
 const FRESH = () => ({
   videoId: null,
@@ -22,6 +90,10 @@ const FRESH = () => ({
   time: 0, // playback position captured at updatedAt
   updatedAt: Date.now(),
   queue: [], // [{ videoId, title, author }]
+  chatLog: [], // last LOG_CAP chats: { name, text }
+  activityLog: [], // last LOG_CAP activity events: { name, action, detail, at }
+  code: null, // this room's 4-digit code (learned from the first connect)
+  public: null, // null = never created via UI (treated private); true/false set by creator
 });
 
 export class Room {
@@ -33,6 +105,8 @@ export class Room {
 
   async load() {
     if (!this.data) this.data = (await this.state.storage.get("data")) || FRESH();
+    this.data.chatLog ||= []; // rooms saved before history existed
+    this.data.activityLog ||= [];
     return this.data;
   }
 
@@ -66,26 +140,51 @@ export class Room {
   }
   // Transient activity feed event (not persisted), stamped with server time.
   logActivity(ws, action, detail) {
-    this.broadcast({ type: "activity", name: this.actor(ws), action, detail: detail || "", at: Date.now() });
+    const ev = { name: this.actor(ws), action, detail: detail || "", at: Date.now() };
+    capLog(this.data.activityLog, ev, LOG_CAP); // callers fall through to save()
+    this.broadcast({ type: "activity", ...ev });
   }
 
-  // Roster: count + nicknames, read from each socket's attachment.
-  presence() {
-    const names = this.state.getWebSockets().map((w) => {
+  // Roster: count + nicknames, read from each socket's attachment. `except` drops
+  // the socket that's closing (getWebSockets() still lists it during webSocketClose).
+  presence(except) {
+    const names = this.state.getWebSockets().filter((w) => w !== except).map((w) => {
       try { return w.deserializeAttachment()?.name || "anon"; } catch { return "anon"; }
     });
     return { type: "users", users: names.length, names };
+  }
+
+  // Upsert or remove this room in the global lobby. Only public rooms with at
+  // least one listener are listed. Fire-and-forget: the lobby is best-effort.
+  reportLobby(closing) {
+    const d = this.data;
+    if (!d.code) return;
+    const count = this.state.getWebSockets().filter((s) => s !== closing).length;
+    const stub = this.env.LOBBY.get(this.env.LOBBY.idFromName("global"));
+    const body = d.public && count > 0
+      ? { op: "upsert", code: d.code, count, title: d.title }
+      : { op: "remove", code: d.code };
+    this.state.waitUntil?.(stub.fetch("https://lobby/report", { method: "POST", body: JSON.stringify(body) }).catch(() => {}));
   }
 
   async fetch(req) {
     if (req.headers.get("Upgrade") !== "websocket")
       return new Response("expected websocket", { status: 426 });
     await this.load();
+    const url = new URL(req.url);
+    const code = (url.searchParams.get("room") || "").slice(0, 64);
+    if (code) this.data.code = code; // learn our own code from the connect
+    // creator's visibility choice sticks; honored only while still unset
+    if (this.data.public === null && url.searchParams.has("public"))
+      this.data.public = url.searchParams.get("public") === "1";
+    await this.save();
     await this.state.storage.deleteAlarm(); // someone's here → cancel any pending close
     const [client, server] = Object.values(new WebSocketPair());
     this.state.acceptWebSocket(server); // hibernatable: no bill while idle
     server.send(JSON.stringify(this.snapshot()));
+    server.send(JSON.stringify({ type: "history", chat: this.data.chatLog, activity: this.data.activityLog }));
     this.broadcast(this.presence());
+    this.reportLobby();
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -94,6 +193,7 @@ export class Room {
     let m;
     try { m = JSON.parse(raw); } catch { return; }
     const d = this.data;
+    const titleBefore = d.title;
 
     switch (m.type) {
       case "play":
@@ -119,6 +219,17 @@ export class Room {
         d.queue.push({ videoId, ...meta });
         if (d.videoId == null) this.advance(); // nothing playing → start now
         this.logActivity(ws, "added", meta.title);
+        break;
+      }
+      case "enqueue_playlist": {
+        const list = String(m.list || "");
+        if (!/^(PL|OLAK5uy_)[\w-]+$/.test(list)) return; // real playlists only
+        const ids = await this.fetchPlaylist(list.slice(0, 64));
+        if (!ids.length) return;
+        const metas = await this.metaBatch(ids); // limited concurrency so oEmbed doesn't throttle
+        ids.forEach((videoId, i) => d.queue.push({ videoId, ...metas[i] }));
+        if (d.videoId == null) this.advance(); // nothing playing → start now
+        this.logActivity(ws, "added", `${ids.length} song${ids.length > 1 ? "s" : ""} from a playlist`);
         break;
       }
       case "next": {
@@ -154,19 +265,22 @@ export class Room {
         ws.serializeAttachment({ name: String(m.name || "anon").slice(0, 24) });
         this.broadcast(this.presence());
         return; // roster only, no state broadcast
-      case "chat":
-        this.broadcast({
-          type: "chat",
-          name: String(m.name || "anon").slice(0, 24),
-          text: String(m.text || "").slice(0, 300),
-        });
-        return; // transient — not persisted, no state broadcast
+      case "chat": {
+        const name = String(m.name || "anon").slice(0, 24);
+        const text = String(m.text || "").slice(0, 300);
+        if (!text) return;
+        capLog(d.chatLog, { name, text }, LOG_CAP);
+        await this.save();
+        this.broadcast({ type: "chat", name, text });
+        return; // handled here, skip the trailing state broadcast
+      }
       default:
         return;
     }
 
     await this.save();
     this.broadcast(this.snapshot());
+    if (d.title !== titleBefore) this.reportLobby(); // now-playing changed → refresh the lobby entry
   }
 
   advance() {
@@ -180,34 +294,132 @@ export class Room {
     d.updatedAt = Date.now();
   }
 
-  async webSocketClose() {
-    this.broadcast(this.presence());
+  async webSocketClose(ws) {
+    this.broadcast(this.presence(ws), ws);
+    this.reportLobby(ws); // count dropped (or hit 0 → delist)
     await this.state.storage.setAlarm(Date.now() + 2 * 60 * 1000); // close room if still empty in 2 min
   }
-  async webSocketError() {
-    this.broadcast(this.presence());
+  async webSocketError(ws) {
+    this.broadcast(this.presence(ws), ws);
+    this.reportLobby(ws);
     await this.state.storage.setAlarm(Date.now() + 2 * 60 * 1000);
   }
 
   // Fires 2 min after the last close. If nobody came back, wipe the room.
   async alarm() {
     if (this.state.getWebSockets().length === 0) {
+      await this.load();
+      this.reportLobby(); // count is 0 → removes it from the lobby
       await this.state.storage.deleteAll();
       this.data = null; // next load() starts fresh
     }
   }
 
-  // Resolve title + artist without an API key. oEmbed is keyless; falls back to the id.
+  // Resolve title + artist without an API key. oEmbed is keyless. Retries transient
+  // failures (429 / 5xx / network) with backoff — a burst of playlist lookups can get
+  // throttled, which otherwise leaves a track showing its raw video id. Falls back to
+  // the id only after retries, and doesn't retry permanent errors (404/private/embed-off).
   async meta(videoId) {
-    try {
-      const r = await fetch(
-        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`
-      );
-      if (r.ok) {
-        const j = await r.json();
-        return { title: j.title || videoId, author: j.author_name || "" };
-      }
-    } catch {}
+    const url = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const r = await fetch(url);
+        if (r.ok) {
+          const j = await r.json();
+          return { title: j.title || videoId, author: j.author_name || "" };
+        }
+        if (r.status !== 429 && r.status < 500) break; // permanent → stop retrying
+      } catch {}
+      await new Promise((res) => setTimeout(res, 200 * (i + 1)));
+    }
     return { title: videoId, author: "" };
+  }
+
+  // Resolve metas with capped concurrency so we don't fire dozens of oEmbed
+  // requests at once (the burst is what gets throttled).
+  async metaBatch(ids, limit = 6) {
+    const out = new Array(ids.length);
+    let next = 0;
+    const worker = async () => { while (next < ids.length) { const i = next++; out[i] = await this.meta(ids[i]); } };
+    await Promise.all(Array.from({ length: Math.min(limit, ids.length) }, worker));
+    return out;
+  }
+
+  // Keyless playlist expansion: fetch the public playlist page and scrape video
+  // ids from its embedded data. Fixed host, so the validated list id can't be
+  // used for SSRF. Empty on any failure (caller no-ops).
+  async fetchPlaylist(list) {
+    try {
+      const r = await fetch(`https://www.youtube.com/playlist?list=${list}&hl=en`, {
+        headers: { "user-agent": "Mozilla/5.0", "accept-language": "en-US,en;q=0.9" },
+      });
+      if (!r.ok) return [];
+      return parsePlaylistVideoIds(await r.text(), PLAYLIST_CAP);
+    } catch {
+      return [];
+    }
+  }
+}
+
+const ROOM_TTL = 4 * 60 * 1000; // drop lobby entries not refreshed within 4 min (crash safety net)
+
+// Single global registry of public rooms. Rooms POST upsert/remove; the landing
+// page GETs the list. Entries carry a timestamp so a room that dies without
+// delisting is filtered out after ROOM_TTL.
+export class Lobby {
+  constructor(state) {
+    this.state = state;
+    this.rooms = null; // { [code]: { count, title, at } }
+  }
+
+  async load() {
+    if (!this.rooms) this.rooms = (await this.state.storage.get("rooms")) || {};
+    return this.rooms;
+  }
+
+  fresh() {
+    const now = Date.now();
+    const out = [];
+    for (const [code, r] of Object.entries(this.rooms)) {
+      if (now - r.at > ROOM_TTL) delete this.rooms[code];
+      else out.push({ code, count: r.count, title: r.title || null });
+    }
+    return out.sort((a, b) => b.count - a.count);
+  }
+
+  async fetch(req) {
+    await this.load();
+    const url = new URL(req.url);
+
+    // user lyric pins: { [title|artist key]: lrclibTrackId }
+    if (url.pathname === "/override") {
+      this.overrides ||= (await this.state.storage.get("overrides")) || {};
+      if (req.method === "POST") {
+        const b = await req.json().catch(() => ({}));
+        if (b.key) {
+          if (b.trackId) this.overrides[b.key] = String(b.trackId);
+          else delete this.overrides[b.key];
+          await this.state.storage.put("overrides", this.overrides);
+        }
+        return new Response("ok");
+      }
+      return Response.json({ trackId: this.overrides[url.searchParams.get("key") || ""] || null });
+    }
+
+    if (req.method === "POST" && url.pathname === "/report") {
+      const b = await req.json().catch(() => ({}));
+      const code = String(b.code || "").slice(0, 64);
+      if (code) {
+        if (b.op === "remove" || !b.count) delete this.rooms[code];
+        else this.rooms[code] = { count: b.count, title: b.title || null, at: Date.now() };
+        await this.state.storage.put("rooms", this.rooms);
+      }
+      return new Response("ok");
+    }
+
+    // GET /rooms → { rooms: [...] }, stale entries pruned
+    const list = this.fresh();
+    await this.state.storage.put("rooms", this.rooms); // persist any pruning
+    return Response.json({ rooms: list });
   }
 }

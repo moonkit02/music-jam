@@ -10,7 +10,16 @@ assets = { directory = "public" }
 name = "ROOM"
 class_name = "Room"
 
+# Single global registry of public rooms, so the landing page can list them.
+[[durable_objects.bindings]]
+name = "LOBBY"
+class_name = "Lobby"
+
 # SQLite-backed Durable Objects work on the free Workers plan.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Lobby"]

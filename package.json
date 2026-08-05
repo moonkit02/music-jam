@@ -1,5 +1,5 @@
 {
-  "name": "music-jam",
+  "name": "vibin",
   "type": "module",
   "private": true,
   "scripts": {
@@ -8,6 +8,6 @@
     "test": "node test.mjs"
   },
   "devDependencies": {
-    "wrangler": "^3"
+    "wrangler": "^4.115.0"
   }
 }

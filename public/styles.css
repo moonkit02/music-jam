@@ -1,0 +1,231 @@
+/* music-jam styles — see STYLES.md for a map of these sections.
+   Sections: 1 base/tokens · 2 top bar · 3 main grid · 4 nav (left) ·
+   5 stage (center) · 6 side panel (queue/chat/activity) · 7 drag-to-reorder ·
+   8 transport (bottom) · 9 nav extras · 10 audio gate · 11 mobile (<=820px) */
+
+/* 1. base + design tokens */
+@font-face { font-family: "Runethia"; src: url("/fonts/Runethia.otf") format("opentype"); font-display: swap; } /* demo font, personal use only */
+:root { color-scheme: dark; --bg:#0b0b0b; --panel:#0f0f0f; --hover:#ffffff14; --line:#232323; --sub:#aaa; --red:#f00; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: 14px/1.4 "Roboto", system-ui, sans-serif; background: var(--bg); color: #fff;
+  display: grid; grid-template-rows: 64px 1fr 72px; overflow: hidden;
+  height: 100vh; height: 100dvh; /* dvh = visible viewport, so top+bottom bars stay on-screen on mobile */
+}
+button { font: inherit; color: #fff; background: none; border: 0; cursor: pointer; }
+input[type=text] { font: inherit; }
+
+/* 2. top bar */
+.topbar { display: flex; align-items: center; gap: 20px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+/* wordmark: Runethia, double size, yellow→green gradient text */
+.logo { display: flex; align-items: center; font-family: "Runethia", system-ui, sans-serif; font-size: 36px; font-weight: 600; line-height: 1; white-space: nowrap;
+  background: linear-gradient(90deg, #ffd166, #8be9a6); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; }
+.search { flex: 1; max-width: 640px; margin: 0 auto; position: relative; }
+.search input { width: 100%; padding: 10px 14px 10px 40px; border-radius: 20px; border: 1px solid #303030; background: #121212; color: #fff; }
+.search::before { content:"\1F50D"; position:absolute; left:14px; top:50%; transform:translateY(-50%); opacity:.5; } /* 🔍 as escape: survives any file encoding */
+#users { color: #8be9a6; white-space: nowrap; }
+
+/* 3. main 3 columns */
+.main { display: grid; grid-template-columns: 240px 1fr 340px; min-height: 0; }
+
+/* 4. nav (left column) */
+nav { border-right: 1px solid var(--line); padding: 12px 8px; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+nav a, nav button.navitem { display: flex; align-items: center; gap: 16px; padding: 10px 12px; border-radius: 10px; color: #fff; text-decoration: none; font-weight: 500; text-align: left; width: 100%; }
+nav a:hover, nav button.navitem:hover { background: var(--hover); }
+nav .sep { height: 1px; background: var(--line); margin: 10px 4px; }
+nav .newbtn { border: 1px solid #333; justify-content: center; }
+nav .roommeta { padding: 8px 12px; color: var(--sub); font-size: 12px; }
+nav .roommeta code { color: #fff; }
+
+/* 5. stage — album block on the left, lyrics panel on the right (desktop) */
+.stage { display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 40px; padding: 24px; min-width: 0; }
+.now-main { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; flex: 0 0 auto; }
+.now-lyrics { flex: 0 1 460px; min-width: 0; height: min(64vh, 460px); display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.now-lyrics.hidden { display: none; } /* no song → collapse the panel so the art centers */
+.art { width: min(46vh, 440px); aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #1a1a1a; box-shadow: 0 8px 40px #000a; }
+.art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.art.empty { display: grid; place-items: center; color: #555; text-align: center; padding: 20px; }
+.nowmeta { text-align: center; width: min(46vh, 440px); max-width: 100%; } /* same width as .art */
+/* title marquee: viewport is the full album width; JS adds .scroll only when the text overflows */
+.nowmeta .t { font-size: 20px; font-weight: 600; width: 100%; overflow: hidden; white-space: nowrap; }
+.nowmeta .t .mq-track { display: inline-flex; will-change: transform; }
+.nowmeta .t.scroll .mq-track { animation: marquee linear infinite; }
+.nowmeta .t .mq-copy { padding-right: 48px; } /* gap between the two loop copies */
+@keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.nowmeta .a { color: var(--sub); margin-top: 2px; }
+.mute-controls { display: none; gap: 10px; }
+.mute-controls button { padding: 8px 14px; border-radius: 20px; border: 1px solid #333; background: #1a1a1a; color: #ddd; }
+.mute-controls button:hover { background: var(--hover); }
+.mute-controls button.on { background: var(--red); border-color: var(--red); color: #fff; }
+/* synced lyrics panel (fills the right column); active line brightens, auto-scrolls to center */
+.lyrics { position: relative; flex: 1 1 0; width: 100%; min-height: 0; overflow-y: auto; text-align: center; scroll-behavior: smooth; scrollbar-width: none; } /* position:relative so ly-line.offsetTop is measured from this box (for centering) */
+.lyrics::-webkit-scrollbar { display: none; }
+.lyrics.has { -webkit-mask-image: linear-gradient(transparent, #000 15%, #000 85%, transparent); mask-image: linear-gradient(transparent, #000 15%, #000 85%, transparent); }
+.ly-line { padding: 6px 0; font-size: 17px; color: var(--sub); opacity: .5; transition: opacity .2s, color .2s; }
+.ly-line.on { opacity: 1; color: #fff; font-weight: 600; }
+.ly-note { color: #666; padding: 10px; font-size: 13px; }
+.ly-pad { height: 50%; } /* bottom spacer so the final lines can still scroll to center */
+.ly-pad-top { height: 15%; } /* top spacer so line 1 starts below the fade, not inside it */
+
+/* 6. side panel (right: queue / chat / activity) */
+.side { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; position: relative; z-index: 6; background: var(--bg); }
+.section-h { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--sub); font-weight: 600; padding: 12px 16px 6px; border-top: 1px solid var(--line); display: flex; align-items: baseline; gap: 8px; }
+.side .section-h:first-child { border-top: 0; }
+.section-h .hint { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 11px; color: #666; }
+#queuepane { flex: 1 1 0; overflow-y: auto; min-height: 60px; }
+#queue { list-style: none; margin: 0; padding: 8px; }
+#queue li { display: flex; align-items: center; gap: 12px; padding: 8px; border-radius: 8px; }
+#queue li:hover { background: var(--hover); }
+#queue li.now { background: #ffffff10; }
+#queue img { width: 48px; height: 48px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; background:#222; }
+#queue .meta { min-width: 0; }
+#queue .meta .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#queue .meta .a { color: var(--sub); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty-note { color: #666; padding: 20px; text-align: center; }
+.subtabs { display: flex; gap: 16px; }
+.subtab { color: var(--sub); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; padding-bottom: 4px; border-bottom: 2px solid transparent; }
+.subtab.on { color: #fff; border-color: #fff; }
+.notif-toggle { margin-left: auto; font-size: 14px; line-height: 1; padding: 0 2px; opacity: .9; }
+.notif-toggle.muted { opacity: .45; }
+#chatpane.hidden, #activitypane.hidden { display: none; } /* ID beats .hidden, so restate */
+#activitypane { flex: 1 1 0; overflow-y: auto; min-height: 80px; padding: 8px 14px; }
+#activity { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+#activity .act { color: #ccc; }
+#activity .ts { color: #666; font-variant-numeric: tabular-nums; margin-right: 6px; }
+#activity .det { color: var(--sub); }
+#chatpane { flex: 1 1 0; display: flex; flex-direction: column; min-height: 80px; }
+#chat { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; } /* min-height:0 so it scrolls instead of pushing the input off-screen */
+#chat b { margin-right: 6px; } /* per-user color set inline */
+.chatbar { padding: 10px; border-top: 1px solid var(--line); }
+.chatbar input { width: 100%; padding: 9px 12px; border-radius: 18px; border: 1px solid #303030; background: #121212; color: #fff; }
+
+/* 7. queue drag-to-reorder + drag-out-to-remove */
+#queue li[data-i] { cursor: grab; }
+#queue li.dragging { opacity: .4; }
+#queue li.drop-target { box-shadow: inset 0 3px 0 var(--red); }             /* insertion line above this row */
+#queuepane.drop-end #queue li:last-child { box-shadow: inset 0 -3px 0 var(--red); } /* insert after the last row */
+/* floating clone that sinks at the cursor when a song is dragged out */
+.sink-ghost { position: fixed; z-index: 90; pointer-events: none; display: flex; align-items: center; gap: 12px;
+  padding: 8px; border-radius: 8px; background: #1a1a1a; box-shadow: 0 10px 34px #000b;
+  transition: transform .5s cubic-bezier(.4,0,1,1), opacity .5s ease; }
+.sink-ghost.sinking { transform: scale(.28) translateY(140px); opacity: 0; }
+.sink-ghost img { width: 48px; height: 48px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; }
+.sink-ghost .meta { min-width: 0; }
+.sink-ghost .meta .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sink-ghost .meta .a { color: var(--sub); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* red ring appears only while the dragged song is OUTSIDE the pane (release = remove) */
+#queuepane { transition: box-shadow .1s ease; }
+body.out-of-list #queuepane { box-shadow: inset 0 0 0 2px rgba(255,45,45,.7), inset 0 0 28px rgba(255,45,45,.28); }
+
+/* 8. transport (bottom playback bar) */
+.transport { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; padding: 0 16px; border-top: 1px solid var(--line); background: #030303; position: relative; z-index: 5; }
+.np { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.np img { width: 48px; height: 48px; border-radius: 4px; object-fit: cover; background:#222; }
+.np .t { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np .a { color: var(--sub); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.center { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.btns { display: flex; align-items: center; gap: 20px; }
+.btns button { font-size: 18px; opacity: .9; }
+.btns .play { width: 40px; height: 40px; border-radius: 50%; background: #fff; color: #000; font-size: 18px; display: grid; place-items: center; }
+.scrub { display: flex; align-items: center; gap: 8px; width: min(38vw, 520px); color: var(--sub); font-size: 12px; }
+.scrub input, #vol { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: #444; outline: none; }
+.scrub input { flex: 1; }
+.scrub input::-webkit-slider-thumb, #vol::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; border-radius:50%; background:#fff; cursor:pointer; }
+.right-tools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; color: var(--sub); }
+#vol { width: 90px; }
+.hidden-player { position: absolute; width: 320px; height: 180px; left: -9999px; top: -9999px; overflow: hidden; }
+
+/* 9. nav extras (join row, room code, nickname, user list) */
+.joinrow { display: flex; gap: 6px; padding: 4px 4px 0; }
+.joinrow input { flex: 1; min-width: 0; padding: 9px 10px; border-radius: 10px; border: 1px solid #333; background: #121212; color: #fff; }
+.joinrow button { padding: 0 14px; border-radius: 10px; border: 1px solid #333; }
+.joinrow button:hover { background: var(--hover); }
+.bigcode { display: block; padding: 4px 12px 8px; font-size: 26px; letter-spacing: 4px; color: #fff; }
+.nickrow { display: flex; align-items: center; gap: 8px; margin: 4px 12px; }
+.nickdot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; background: #888; box-shadow: 0 0 6px currentColor; }
+.nickinput { flex: 1; min-width: 0; padding: 9px 10px; border-radius: 10px; border: 1px solid #333; background: #121212; color: #fff; }
+.userlist { list-style: none; margin: 4px 0; padding: 0 8px; overflow-y: auto; flex: 1 1 0; min-height: 40px; }
+.userlist li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: #ddd; font-size: 13px; }
+.userlist li::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--uc, #8be9a6); flex: 0 0 auto; }
+
+/* 10. audio gate (tap-to-start overlay) */
+#gate { position: fixed; inset: 0; z-index: 100; background: #000c; backdrop-filter: blur(6px); display: grid; place-items: center; text-align: center; }
+.gate-title { font-family: "Runethia", system-ui, sans-serif; } /* Vibin wordmark matches the topbar */
+#gate .gate-title { font-size: 40px; font-weight: 700; margin-bottom: 20px; }
+#gatebtn { font-size: 18px; padding: 16px 32px; border-radius: 30px; background: var(--red); font-weight: 600; }
+#gatebtn:hover { filter: brightness(1.1); }
+#gate .gate-sub { color: var(--sub); font-size: 13px; margin-top: 16px; }
+
+/* landing / room picker (shown when no room is in the URL) */
+#landing { position: fixed; inset: 0; z-index: 101; background: #000d; backdrop-filter: blur(6px); display: none; place-items: center; padding: 20px; }
+.landing-box { width: min(440px, 92vw); max-height: 90vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px; position: relative; text-align: center; }
+.landing-box .gate-title { font-size: 26px; font-weight: 700; }
+.landing-sub { color: var(--sub); font-size: 13px; margin: 6px 0 18px; }
+.landing-box .section-h { border-top: 0; padding-left: 4px; text-align: left; }
+.roomlist { list-style: none; margin: 0 0 16px; padding: 0; max-height: 40vh; overflow-y: auto; text-align: left; }
+.roomlist li[data-code] { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; cursor: pointer; }
+.roomlist li[data-code]:hover { background: var(--hover); }
+.rl-code { font-weight: 600; color: #fff; }
+.rl-title { flex: 1; min-width: 0; color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rl-count { color: var(--sub); font-size: 12px; white-space: nowrap; }
+.landing-actions { display: flex; gap: 8px; margin-bottom: 14px; }
+.landing-actions button { flex: 1; padding: 12px; border-radius: 10px; border: 1px solid #333; background: #1a1a1a; color: #fff; font-weight: 600; }
+.landing-actions button:hover { background: var(--hover); }
+#landing-close { position: absolute; top: 10px; right: 12px; font-size: 18px; color: var(--sub); display: none; }
+#landing.in-room #landing-close { display: block; }
+
+.mtabbar { display: none; } /* hidden on desktop; shown by the mobile block below */
+
+/* 11. mobile layout (<=820px): one panel at a time + bottom tab bar */
+@media (max-width: 820px) {
+  /* rows: topbar, one switchable panel, transport, mobile tab bar */
+  body { grid-template-rows: auto 1fr auto auto; }
+
+  .topbar { height: auto; flex-wrap: wrap; padding: 8px 12px; gap: 8px 12px; }
+  .search { order: 3; flex-basis: 100%; max-width: none; margin: 0; }
+  #users { font-size: 12px; }
+
+  /* middle shows exactly one panel, chosen by the mobile tab bar */
+  .main { display: block; overflow-y: auto; min-height: 0; }
+  nav, .stage, .side { display: none; width: auto; height: 100%; }
+  nav { overflow-y: auto; }
+  .side { flex-direction: column; }
+  /* stack: album block on top, lyrics below (fills leftover height, scrolls) */
+  .stage { flex-direction: column; align-items: center; padding: 20px 16px; justify-content: flex-start; gap: 16px; }
+  /* one shared centered column so art / title / mute / lyrics all line up on the same axis */
+  .now-main, .now-lyrics { width: min(46vh, 82vw); max-width: 100%; }
+  .stage .art, .stage .nowmeta { width: 100%; flex: 0 0 auto; }
+  .mute-controls { justify-content: center; flex-wrap: wrap; } /* stay centered even if buttons wrap */
+  .now-lyrics { flex: 1 1 0; min-height: 0; height: auto; }
+
+  body.mtab-now .stage { display: flex; }
+  body.mtab-room nav { display: flex; }
+  body.mtab-queue .side, body.mtab-chat .side { display: flex; }
+  body.mtab-queue #chathdr, body.mtab-queue #chatpane, body.mtab-queue #activitypane { display: none; }
+  body.mtab-chat #queuehdr, body.mtab-chat #queuepane { display: none; }
+
+  /* transport becomes a slim bar under the content; playback stays reachable on every tab */
+  .transport { grid-template-columns: 1fr; padding: 6px 16px; }
+  .transport .np, .transport .right-tools { display: none; }
+  .scrub { width: 100%; }
+
+  /* bottom mobile tab bar */
+  .mtabbar { display: flex; flex-direction: row; border-top: 1px solid var(--line); background: #0a0a0a; }
+  .mtabbar button { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 8px 4px 10px; color: var(--sub); font-size: 11px; position: relative; -webkit-tap-highlight-color: transparent; }
+  /* fixed icon slot so thin glyphs (▶ ≡) and tall emoji (👥 💬) center identically and the labels line up */
+  .mtabbar button .ic { display: flex; align-items: center; justify-content: center; height: 24px; font-size: 20px; line-height: 1; }
+  .mtabbar button.on { color: #fff; }
+  /* click feedback: aura expands to a fixed radius in 200ms, then fades in 100ms */
+  .mtabbar button::after {
+    content: ""; position: absolute; left: 50%; top: 42%; width: 84px; height: 84px; margin: -42px 0 0 -42px;
+    border-radius: 50%; pointer-events: none; transform: scale(0); opacity: 0;
+    background: radial-gradient(circle, rgba(255,255,255,.55), rgba(255,255,255,0) 70%);
+  }
+  .mtabbar button.ripple::after { animation: tab-aura 300ms ease-out; }
+  @keyframes tab-aura {
+    0%   { transform: scale(0); opacity: .8; }
+    67%  { transform: scale(1); opacity: .8; }
+    100% { transform: scale(1); opacity: 0; }
+  }
+}
