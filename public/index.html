@@ -51,7 +51,7 @@
     </div>
 
     <aside class="side">
-      <div class="section-h" id="queuehdr">Up next <span class="hint">drag to reorder · drag out to remove</span></div>
+      <div class="section-h" id="queuehdr">Up next <span class="hint" id="queuedur"></span> <span class="hint">drag to reorder · drag out to remove</span></div>
       <div id="queuepane"><ul id="queue"></ul></div>
       <div class="section-h subtabs" id="chathdr">
         <button id="tab-chat" class="subtab on">Chat</button>
@@ -264,10 +264,15 @@ function handle(m) {
   }
   if (m.type === "chat") { addChat(m.name, m.text); if (!document.hasFocus()) chatBeep(); return; } // beep only when they're away
   if (m.type === "activity") return addActivity(m.name, m.action, m.detail, m.at);
+  if (m.type === "duration") { // someone resolved a track's length → patch our copy
+    server.queue.forEach((q) => { if (q.videoId === m.videoId && !q.secs) q.secs = m.secs; });
+    return renderQueue();
+  }
   if (m.type === "state") {
     server = { videoId: m.videoId, title: m.title, author: m.author, playing: m.playing, baseTime: m.time, baseAt: Date.now(), queue: m.queue };
     renderQueue();
     applyState();
+    wantDurations(); // resolve any queued track we don't have a length for yet
   }
 }
 
@@ -278,7 +283,7 @@ window.onYouTubeIframeAPIReady = () => {
     height: "180", width: "320",
     playerVars: { controls: 0, disablekb: 1, rel: 0, playsinline: 1 },
     events: {
-      onReady: () => { ready = true; player.setVolume(+$("vol").value); applyState(); },
+      onReady: () => { ready = true; player.setVolume(+$("vol").value); applyState(); wantDurations(); },
       // Only a real playthrough end advances the room. Ignore ENDED that our own
       // load/seek caused (e.g. a projected time past the song's end), which would
       // otherwise skip the track for everyone with no activity entry.
@@ -287,6 +292,39 @@ window.onYouTubeIframeAPIReady = () => {
   });
 };
 { const s = document.createElement("script"); s.src = "https://www.youtube.com/iframe_api"; document.head.appendChild(s); }
+
+// ---- exact durations: a hidden muted player cues each queued track and reads its
+// real length, then broadcasts it so nobody else has to re-resolve. Cue (not play)
+// loads metadata without triggering an ad — an ad would otherwise poison getDuration().
+// ponytail: serial + best-effort. Un-embeddable/private ids time out and fall back to
+// the estimate. Cue-only by design; no play-fallback, to stay ad-safe.
+let durPlayer, durReady = false, durBusy = false, durQ = [], durAsked = new Set();
+function initDurPlayer() {
+  if (durPlayer || !window.YT || !YT.Player) return;
+  const host = document.createElement("div"); host.style.display = "none"; document.body.appendChild(host);
+  durPlayer = new YT.Player(host, { height: "0", width: "0", playerVars: { mute: 1 }, events: { onReady: () => { durReady = true; pumpDur(); } } });
+}
+function wantDurations() {
+  for (const q of server.queue) if (!q.secs && !durAsked.has(q.videoId)) { durAsked.add(q.videoId); durQ.push(q.videoId); }
+  initDurPlayer(); pumpDur();
+}
+function pumpDur() {
+  if (durBusy || !durReady || !durQ.length) return;
+  durBusy = true;
+  const id = durQ.shift();
+  resolveDuration(id).then((secs) => { durBusy = false; if (secs) send({ type: "duration", videoId: id, secs }); pumpDur(); });
+}
+function resolveDuration(id) {
+  return new Promise((res) => {
+    try { durPlayer.mute(); durPlayer.cueVideoById(id); } catch { return res(0); }
+    let tries = 0;
+    const iv = setInterval(() => {
+      const d = durPlayer.getDuration ? durPlayer.getDuration() : 0;
+      if (d > 0) { clearInterval(iv); res(Math.round(d)); }
+      else if (++tries > 30) { clearInterval(iv); res(0); } // ~6s → give up, estimate covers it
+    }, 200);
+  });
+}
 
 // Mirror server state onto the local player. Enforces play/pause on EVERY path,
 // so a fresh load / late joiner never autoplays past a paused room.
@@ -469,6 +507,16 @@ function renderQueue() {
   server.queue.forEach((q, i) =>
     rows.push(`<li draggable="true" data-i="${i}" title="drag to reorder · drag out to remove"><img src="${thumb(q.videoId)}"><div class="meta"><div class="t">${esc(q.title)}</div><div class="a">${esc(q.author || "")}</div></div></li>`));
   $("queue").innerHTML = rows.length ? rows.join("") : `<li class="empty-note">Nothing queued</li>`;
+  // Total = sum of resolved lengths; anything not yet resolved contributes AVG so the
+  // number is useful immediately and sharpens to exact as durations arrive. The `~`
+  // stays only while something is still estimated.
+  const AVG = 3.7 * 60; // ponytail: avg track length, tune if rooms skew long/short
+  let secs = 0, exact = true;
+  const curDur = server.videoId && player && player.getVideoData && player.getVideoData().video_id === server.videoId && player.getDuration ? player.getDuration() : 0;
+  if (server.videoId) { if (curDur > 0) secs += curDur; else { secs += AVG; exact = false; } }
+  for (const q of server.queue) { if (q.secs) secs += q.secs; else { secs += AVG; exact = false; } }
+  const n = server.queue.length + (server.videoId ? 1 : 0), mins = Math.round(secs / 60);
+  $("queuedur").textContent = n ? (exact ? "" : "~") + (mins >= 60 ? `${(mins / 60).toFixed(1)}hr` : `${mins}min`) : "";
   if (server.queue.length > lastQueueLen) $("queuepane").scrollTop = $("queuepane").scrollHeight; // follow newest
   lastQueueLen = server.queue.length;
 }

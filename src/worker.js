@@ -6,7 +6,7 @@ import { capLog, parsePlaylistVideoIds, cleanTrackTitle, pickBestLyric, lyricKey
 
 const LYRICS_UA = { "user-agent": "Vibin (+https://github.com/moonkit02/my-claude-skill)" };
 
-const PLAYLIST_CAP = 50; // max songs pulled from one playlist link
+const PLAYLIST_CAP = 100; // max songs pulled from one playlist link (YouTube embeds ~100 in the initial page; beyond that needs continuation tokens we don't scrape)
 
 const lobbyStub = (env) => env.LOBBY.get(env.LOBBY.idFromName("global"));
 
@@ -273,6 +273,20 @@ export class Room {
         await this.save();
         this.broadcast({ type: "chat", name, text });
         return; // handled here, skip the trailing state broadcast
+      }
+      case "duration": {
+        // A client resolved a queued track's real length (hidden player). Stamp it
+        // onto every matching queue item so late joiners get it in the snapshot,
+        // then broadcast the patch so current listeners update without a re-resolve.
+        const vid = String(m.videoId || "").slice(0, 16);
+        const secs = Math.min(24 * 3600, Math.max(0, Math.round(Number(m.secs) || 0)));
+        if (!vid || !secs) return;
+        let hit = false;
+        for (const q of d.queue) if (q.videoId === vid && !q.secs) { q.secs = secs; hit = true; }
+        if (!hit) return; // already known, or the item's gone
+        await this.save();
+        this.broadcast({ type: "duration", videoId: vid, secs });
+        return;
       }
       default:
         return;
