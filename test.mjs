@@ -1,7 +1,17 @@
 // Runnable check for the two pieces of non-trivial pure logic.
 // Run: node test.mjs
-import { parseVideoId, parsePlaylistId, parsePlaylistVideoIds, cleanTrackTitle, parseLrc, activeLineIndex, pickBestLyric, lyricKey, parseLrclibId, expectedTime, capLog } from "./public/lib.js";
+import { parseVideoId, parsePlaylistId, parsePlaylistVideoIds, parseSearchResults, cleanTrackTitle, parseLrc, activeLineIndex, pickBestLyric, lyricKey, parseLrclibId, expectedTime, capLog } from "./public/lib.js";
 import assert from "node:assert/strict";
+
+// --- parseSearchResults (id/title/author per renderer, dedup, cap) ---
+{
+  const s = '"videoRenderer":{"videoId":"aaaaaaaaaaa","title":{"runs":[{"text":"Song A \\u0026 more"}]},"ownerText":{"runs":[{"text":"Artist A"}]}}"videoRenderer":{"videoId":"bbbbbbbbbbb","title":{"runs":[{"text":"Song B"}]},"ownerText":{"runs":[{"text":"Artist B"}]}}';
+  assert.deepEqual(parseSearchResults(s), [
+    { videoId: "aaaaaaaaaaa", title: "Song A & more", author: "Artist A" },
+    { videoId: "bbbbbbbbbbb", title: "Song B", author: "Artist B" },
+  ]);
+  assert.equal(parseSearchResults(s, 1).length, 1); // cap
+}
 
 // --- parseVideoId ---
 assert.equal(parseVideoId("dQw4w9WgXcQ"), "dQw4w9WgXcQ");
@@ -71,5 +81,21 @@ assert.equal(parseLrclibId("https://lrclib.net/tracks/36317191"), "36317191");
 assert.equal(parseLrclibId("https://lrclib.net/api/get/36317191"), "36317191");
 assert.equal(parseLrclibId("36317191"), "36317191"); // bare id
 assert.equal(parseLrclibId("not a url"), null);
+
+// --- ad/stall episode counter (mirrors the tick logic in index.html) ---
+// One count per frozen episode, regardless of how many ticks it lasts.
+function countAds(times) { // times = getCurrentTime() per tick while playing
+  let last = 0, stall = 0, ads = 0;
+  for (const t of times) {
+    if (t > last + 0.05) stall = 0;
+    else if (t > 0 && ++stall === 2) ads++;
+    last = t;
+  }
+  return ads;
+}
+assert.equal(countAds([1, 1.4, 1.8, 2.2]), 0);          // smooth playback, no ad
+assert.equal(countAds([1, 1, 1, 1.4, 1.8]), 1);         // one 3-tick freeze = one ad
+assert.equal(countAds([1, 2, 2, 2, 3, 3, 3, 4]), 2);    // two separate freezes
+assert.equal(countAds([1, 1]), 0);                       // single frozen tick is not enough
 
 console.log("ok");

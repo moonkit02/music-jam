@@ -10,7 +10,7 @@
 <body>
   <div class="topbar">
     <div class="logo">Vibin</div>
-    <div class="search"><input id="url" type="text" placeholder="Paste a YouTube link, id, or playlist to queue…" /></div>
+    <div class="search"><input id="url" type="text" placeholder="What's in your mind? Type your keyword or paste the link" /><div id="results" class="results hidden"></div></div>
     <span id="users">0 listening</span>
   </div>
 
@@ -34,10 +34,11 @@
 
     <div class="stage">
       <div class="now-main">
-        <div class="art empty" id="art">Queue a track to start the jam</div>
+        <div class="art empty" id="art">Seems there's no more songs 🎵<br>What keyword are you looking for?<br><span class="art-hint">use the search bar above ☝️</span></div>
         <div class="nowmeta">
           <div class="t" id="nowtitle">Nothing playing</div>
           <div class="a" id="nowauthor"></div>
+          <div class="radio-badge" id="radiostatus"></div>
         </div>
         <div class="mute-controls" id="mutectl">
           <button id="mutesong">🔇 Mute this song</button>
@@ -269,10 +270,11 @@ function handle(m) {
     return renderQueue();
   }
   if (m.type === "state") {
-    server = { videoId: m.videoId, title: m.title, author: m.author, playing: m.playing, baseTime: m.time, baseAt: Date.now(), queue: m.queue };
+    server = { videoId: m.videoId, title: m.title, author: m.author, playing: m.playing, baseTime: m.time, baseAt: Date.now(), queue: m.queue, radioQuery: m.radioQuery };
     renderQueue();
     applyState();
     wantDurations(); // resolve any queued track we don't have a length for yet
+    refreshResultRows(); // reflect the updated playlist in an open pick list
   }
 }
 
@@ -351,6 +353,17 @@ function applyState() {
   setTimeout(() => (applyingRemote = false), 600);
 }
 
+// ---- telemetry: drift corrections + ad/stall interruptions ----
+// ponytail: localStorage counters + console, no backend. Read via jamStats().
+// Ceiling: "ad" is a stall-while-playing heuristic (a long buffer looks the same).
+const stats = JSON.parse(localStorage.getItem("jam.stats") || "{}");
+for (const k of ["drift", "driftSec", "ads"]) stats[k] ??= 0;
+stats.since ??= Date.now();
+const saveStats = () => localStorage.setItem("jam.stats", JSON.stringify(stats));
+window.jamStats = () => ({ ...stats, sinceISO: new Date(stats.since).toISOString() });
+window.jamStatsReset = () => { localStorage.removeItem("jam.stats"); location.reload(); };
+let lastTime = 0, adStall = 0; // ad-detection: consecutive frozen ticks while playing
+
 // ---- UI tick: progress + ongoing drift correction ----
 setInterval(() => {
   $("playpause").textContent = server.playing ? "⏸" : "▶";
@@ -366,8 +379,23 @@ setInterval(() => {
   // drift-correct, but never seek at/past the end (a projection that overshoots
   // duration would end the song and skip it for the whole room)
   const want = expectedTime(server);
-  if (!applyingRemote && server.playing && (!dur || want < dur - 0.5) && Math.abs((player.getCurrentTime() || 0) - want) > 1.5)
+  const gap = Math.abs((player.getCurrentTime() || 0) - want);
+  if (!applyingRemote && server.playing && (!dur || want < dur - 0.5) && gap > 1.5) {
+    stats.drift++; stats.driftSec += gap; saveStats();
+    console.warn(`[jam] drift-correct #${stats.drift} gap=${gap.toFixed(2)}s`);
     player.seekTo(want, true);
+  }
+  // Ad/stall: while the room plays, the main video's time should advance each
+  // tick; if frozen for 2+ ticks (~0.8s) an ad (or long buffer) is covering it.
+  if (server.playing && !applyingRemote) {
+    const t = player.getCurrentTime() || 0;
+    if (t > lastTime + 0.05) adStall = 0;                    // advancing → clear
+    else if (dur && t > 0 && ++adStall === 2) {              // count once per episode
+      stats.ads++; saveStats();
+      console.warn(`[jam] ad/stall #${stats.ads}`);
+    }
+    lastTime = t;
+  } else { lastTime = player.getCurrentTime?.() || 0; adStall = 0; }
   syncLyrics();
 }, 400);
 
@@ -402,11 +430,63 @@ function add() {
   const list = parsePlaylistId(val); // playlist link → server expands it
   if (list) { send({ type: "enqueue_playlist", list }); $("url").value = ""; return; }
   const id = parseVideoId(val);
-  if (!id) { $("url").value = ""; $("url").placeholder = "Couldn't find a video id in that…"; return; }
-  send({ type: "enqueue", videoId: id });
-  $("url").value = "";
+  if (id) { send({ type: "enqueue", videoId: id }); $("url").value = ""; hideResults(); return; }
+  const q = val.trim();
+  if (q) showResults(q); // keyword → top-10 pick list (with a radio option)
 }
 $("url").addEventListener("keydown", (e) => e.key === "Enter" && add());
+
+// live search: 100ms after typing stops, search the current keyword. Links are left
+// for Enter (queue), not searched; empty/1-char closes the list.
+let searchTimer;
+$("url").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  const val = $("url").value;
+  if (parsePlaylistId(val) || parseVideoId(val)) return hideResults(); // a link → Enter to queue
+  const q = val.trim();
+  if (q.length < 2) return hideResults();
+  searchTimer = setTimeout(() => showResults(q), 100);
+});
+
+// ---- keyword → scrollable pick list (radio option on top; multi-add) ----
+let lastQ = "";
+// A song is "Added" if it's in the room's playlist (now-playing or queued), not a local click log.
+const isQueued = (vid) => server.videoId === vid || (server.queue || []).some((q) => q.videoId === vid);
+const radioRowHTML = (q) => `<div class="res-row res-radio" data-radio="1"><span class="res-ic">📻</span><div class="res-meta"><div class="res-t">Start radio: ${esc(q)}</div><div class="res-a">auto-play matching songs</div></div></div>`;
+const resRowHTML = (v) => { const a = isQueued(v.videoId); return `<div class="res-row${a ? " is-added" : ""}" data-vid="${v.videoId}"><img src="${thumb(v.videoId)}" alt=""><div class="res-meta"><div class="res-t">${esc(v.title)}</div><div class="res-a">${esc(v.author || "")}</div></div><span class="res-add">${a ? "Added ✓" : ""}</span></div>`; };
+
+async function showResults(q) {
+  lastQ = q;
+  const box = $("results");
+  box.innerHTML = radioRowHTML(q) + `<div class="res-note">Searching…</div>`;
+  box.classList.remove("hidden");
+  let j = { items: [] };
+  try { j = await (await fetch(`/search?q=${encodeURIComponent(q)}`)).json(); } catch {}
+  if (box.classList.contains("hidden") || lastQ !== q) return; // closed or a newer search superseded this
+  const rows = (j.items || []).map(resRowHTML).join(""); // render all; box scrolls natively
+  box.innerHTML = radioRowHTML(q) + (rows || `<div class="res-note">No results</div>`);
+}
+function hideResults() { const b = $("results"); b.classList.add("hidden"); b.innerHTML = ""; }
+// Keep the open pick list in sync with the playlist: rows already queued show
+// "Added ✓" and are deactivated; rows whose song has since left the queue reopen.
+function refreshResultRows() {
+  const box = $("results"); if (box.classList.contains("hidden")) return;
+  box.querySelectorAll(".res-row[data-vid]").forEach((row) => {
+    const q = isQueued(row.dataset.vid);
+    row.classList.toggle("is-added", q);
+    const tag = row.querySelector(".res-add"); if (tag) tag.textContent = q ? "Added ✓" : "";
+  });
+}
+$("results").onclick = (e) => {
+  const row = e.target.closest(".res-row"); if (!row) return;
+  if (row.dataset.radio) { send({ type: "radio", query: lastQ }); $("url").value = ""; hideResults(); return; } // radio switches station → close
+  const vid = row.dataset.vid; if (!vid || isQueued(vid)) return; // already in the playlist → deactivated
+  send({ type: "enqueue", videoId: vid });
+  row.classList.add("is-added");
+  row.querySelector(".res-add").textContent = "Added ✓"; // instant feedback; state broadcast confirms it
+};
+$("url").addEventListener("keydown", (e) => { if (e.key === "Escape") hideResults(); });
+document.addEventListener("click", (e) => { if (!e.target.closest(".search")) hideResults(); });
 
 // Show text in `el`; if it's wider than the field, scroll it as a seamless loop.
 // Two padded copies + translateX(-50%) means the second lands exactly where the
@@ -430,13 +510,14 @@ addEventListener("resize", () => { const t = $("nowtitle"); if (t.dataset.text) 
 function updateNowPlaying() {
   const has = !!server.videoId;
   $("art").className = has ? "art" : "art empty";
-  $("art").innerHTML = has ? `<img src="${thumb(server.videoId)}" alt="" />` : "Queue a track to start the jam";
+  $("art").innerHTML = has ? `<img src="${thumb(server.videoId)}" alt="" />` : `Seems there's no more songs 🎵<br>What keyword are you looking for?<br><span class="art-hint">use the search bar above ☝️</span>`;
   setMarquee($("nowtitle"), has ? (server.title || server.videoId) : "Nothing playing");
   $("nowauthor").textContent = has ? (server.author || "") : "";
   $("npart").style.display = has ? "block" : "none";
   if (has) $("npart").src = thumb(server.videoId);
   $("nptitle").textContent = has ? (server.title || server.videoId) : "—";
   $("npauthor").textContent = has ? (server.author || "") : "";
+  $("radiostatus").textContent = server.radioQuery ? `📻 Radio: ${server.radioQuery}` : "";
   updateMuteUI();
   loadLyrics();
 }

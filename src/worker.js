@@ -2,13 +2,31 @@
 // One Durable Object per room holds the authoritative playback state and fans
 // changes out to every connected client over WebSockets.
 
-import { capLog, parsePlaylistVideoIds, cleanTrackTitle, pickBestLyric, lyricKey, parseLrclibId } from "../public/lib.js";
+import { capLog, parsePlaylistVideoIds, parseSearchResults, cleanTrackTitle, pickBestLyric, lyricKey, parseLrclibId } from "../public/lib.js";
 
 const LYRICS_UA = { "user-agent": "Vibin (+https://github.com/moonkit02/my-claude-skill)" };
 
 const PLAYLIST_CAP = 100; // max songs pulled from one playlist link (YouTube embeds ~100 in the initial page; beyond that needs continuation tokens we don't scrape)
 
+// Auto-DJ (radio): once a genre is set, when the queue runs dry we scrape a keyless
+// YouTube search for that genre and random-pick from the results. No genre set → no
+// auto-play; the room stays idle and the client asks the user what to put on.
+// ponytail: search-scrape, no API key, no playlist to rot.
+const RADIO_MIN = 3; // radio keeps at least this many tracks queued up next
+const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+
 const lobbyStub = (env) => env.LOBBY.get(env.LOBBY.idFromName("global"));
+
+const YT_UA = { "user-agent": "Mozilla/5.0", "accept-language": "en-US,en;q=0.9" };
+
+// One search page → the results embedded in its HTML (~20-25 clean items). Beyond
+// that YouTube pages via an innertube "lockup" format that's fragile to parse, so
+// we take the reliable first page and let the client reveal it in chunks.
+async function searchFirst(q) {
+  const r = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%253D%253D&hl=en`, { headers: YT_UA });
+  if (!r.ok) return { items: [] };
+  return { items: parseSearchResults(await r.text(), 30) };
+}
 
 export default {
   async fetch(req, env) {
@@ -23,6 +41,11 @@ export default {
     }
     if (url.pathname === "/lyrics") {
       return handleLyrics(url, env);
+    }
+    if (url.pathname === "/search") {
+      const q = (url.searchParams.get("q") || "").slice(0, 80).trim();
+      if (!q) return Response.json({ items: [] });
+      try { return Response.json(await searchFirst(q)); } catch { return Response.json({ items: [] }); }
     }
     if (url.pathname === "/lyrics/set" && req.method === "POST") {
       const b = await req.json().catch(() => ({}));
@@ -94,6 +117,9 @@ const FRESH = () => ({
   activityLog: [], // last LOG_CAP activity events: { name, action, detail, at }
   code: null, // this room's 4-digit code (learned from the first connect)
   public: null, // null = never created via UI (treated private); true/false set by creator
+  radio: true, // auto-DJ: always keep the queue fed while listeners are present
+  radioQuery: "", // genre/keyword the room chose for radio ("" → RADIO_QUERY default)
+  radioPool: [], // shuffled, not-yet-played ids for the current radio session
 });
 
 export class Room {
@@ -122,7 +148,7 @@ export class Room {
     return {
       type: "state",
       videoId: d.videoId, title: d.title, author: d.author,
-      playing: d.playing, time, queue: d.queue,
+      playing: d.playing, time, queue: d.queue, radio: d.radio, radioQuery: d.radioQuery,
     };
   }
 
@@ -185,6 +211,7 @@ export class Room {
     server.send(JSON.stringify({ type: "history", chat: this.data.chatLog, activity: this.data.activityLog }));
     this.broadcast(this.presence());
     this.reportLobby();
+    if (this.data.radio) this.state.waitUntil?.(this.radioTick()); // idle radio room woke up → feed it
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -237,6 +264,7 @@ export class Room {
         if (m.videoId && m.videoId !== d.videoId) return;
         const skipped = d.title;
         this.advance();
+        await this.radioFill(); // radio on + queue ran dry → top it back up
         if (m.manual) this.logActivity(ws, "skipped", skipped); // song-ended auto-next isn't logged
         break;
       }
@@ -259,6 +287,7 @@ export class Room {
         if (Number.isInteger(i) && d.queue[i] && d.queue[i].videoId === vid) removed = d.queue.splice(i, 1)[0];
         else { const j = d.queue.findIndex((x) => x.videoId === vid); if (j >= 0) removed = d.queue.splice(j, 1)[0]; }
         if (removed) this.logActivity(ws, "removed", removed.title);
+        await this.radioFill(); // dropped below RADIO_MIN → top the list back up
         break;
       }
       case "hello":
@@ -273,6 +302,14 @@ export class Room {
         await this.save();
         this.broadcast({ type: "chat", name, text });
         return; // handled here, skip the trailing state broadcast
+      }
+      case "radio": {
+        // Radio is always on; this just sets/changes the genre keyword.
+        const q = String(m.query || "").slice(0, 80).trim();
+        if (q && q !== d.radioQuery) { d.radioQuery = q; d.radioPool = []; } // new keyword → fresh pool
+        await this.radioFill();
+        this.logActivity(ws, `radio → ${d.radioQuery || "mix"} 📻`);
+        break;
       }
       case "duration": {
         // A client resolved a queued track's real length (hidden player). Stamp it
@@ -357,6 +394,48 @@ export class Room {
     const worker = async () => { while (next < ids.length) { const i = next++; out[i] = await this.meta(ids[i]); } };
     await Promise.all(Array.from({ length: Math.min(limit, ids.length) }, worker));
     return out;
+  }
+
+  // ---- auto-DJ (radio) ----
+  // Scrape a pool of video ids from a keyless search (reuses the playlist parser's
+  // fallback videoId scan). Fixed host → the query can't be used for SSRF.
+  async radioIds() {
+    try {
+      const q = this.data.radioQuery;
+      if (!q) return [];
+      const r = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%253D%253D&hl=en`, {
+        headers: { "user-agent": "Mozilla/5.0", "accept-language": "en-US,en;q=0.9" },
+      });
+      if (!r.ok) return [];
+      return parsePlaylistVideoIds(await r.text(), 200);
+    } catch { return []; }
+  }
+
+  // Keep one track playing + one on deck while radio is on and someone's listening.
+  // Only fills the gap, so a user's own queued songs always take priority. Returns
+  // whether it changed anything (so callers know to broadcast).
+  async radioFill() {
+    const d = this.data;
+    if (!d.radio || !d.radioQuery || this.state.getWebSockets().length === 0) return false; // no genre → don't auto-play, let the user pick
+    let changed = false;
+    while (d.queue.length < RADIO_MIN) { // keep RADIO_MIN tracks in the up-next list
+      if (!d.radioPool?.length) {
+        d.radioPool = shuffle(await this.radioIds());
+        if (!d.radioPool.length) break; // scrape failed → give up this round, retry next tick
+      }
+      const videoId = d.radioPool.shift();
+      const meta = await this.meta(videoId);
+      d.queue.push({ videoId, ...meta });
+      if (d.videoId == null) this.advance(); // first track → start playing now
+      changed = true;
+    }
+    return changed;
+  }
+
+  // Fill + persist + broadcast. Used from paths that don't already fall through to
+  // the message loop's trailing save/broadcast (e.g. a listener joining).
+  async radioTick() {
+    if (await this.radioFill()) { await this.save(); this.broadcast(this.snapshot()); this.reportLobby(); }
   }
 
   // Keyless playlist expansion: fetch the public playlist page and scrape video

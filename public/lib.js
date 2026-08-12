@@ -37,6 +37,26 @@ export function parsePlaylistVideoIds(html, cap = 50) {
   return ids.slice(0, cap);
 }
 
+// Parse a YouTube search-results page into [{videoId, title, author}] for a pick
+// list. Each result is a "videoRenderer" block; we take id + title + channel from
+// it. ponytail: regex on HTML, tolerant of missing author, capped.
+export function parseSearchResults(html, cap = 10) {
+  const out = [], seen = new Set();
+  const dec = (s) => { try { return JSON.parse('"' + s + '"'); } catch { return s; } };
+  const re = /"videoRenderer":\{([\s\S]*?)(?="videoRenderer":\{|$)/g;
+  let m;
+  while ((m = re.exec(html)) && out.length < cap) {
+    const c = m[1];
+    const vid = c.match(/"videoId":"([\w-]{11})"/);
+    const title = c.match(/"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"/);
+    if (!vid || !title || seen.has(vid[1])) continue;
+    const author = c.match(/"ownerText":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"/);
+    seen.add(vid[1]);
+    out.push({ videoId: vid[1], title: dec(title[1]), author: author ? dec(author[1]) : "" });
+  }
+  return out;
+}
+
 // Best-effort cleanup of a YouTube title into something a lyrics DB can match:
 // drop bracketed junk and trailing tags like "(Official Video)", "[MV]", "feat. …".
 export function cleanTrackTitle(title) {
