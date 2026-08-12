@@ -98,4 +98,16 @@ assert.equal(countAds([1, 1, 1, 1.4, 1.8]), 1);         // one 3-tick freeze = o
 assert.equal(countAds([1, 2, 2, 2, 3, 3, 3, 4]), 2);    // two separate freezes
 assert.equal(countAds([1, 1]), 0);                       // single frozen tick is not enough
 
+// --- song-end quorum (mirrors the "next" vote logic in worker.js) ---
+// advance only when every socket has voted for the current video; manual/force bypass.
+function shouldAdvance(votesForThisVid, totalSockets, { manual = false, force = false } = {}) {
+  if (manual || force) return true;
+  return votesForThisVid >= totalSockets;
+}
+assert.equal(shouldAdvance(1, 1), true);                    // solo listener → immediate
+assert.equal(shouldAdvance(2, 3), false);                   // 2 of 3 finished → hold
+assert.equal(shouldAdvance(3, 3), true);                    // everyone finished → go
+assert.equal(shouldAdvance(1, 3, { force: true }), true);   // grace-timeout forces past stragglers
+assert.equal(shouldAdvance(1, 3, { manual: true }), true);  // manual skip ignores the wait
+
 console.log("ok");

@@ -262,6 +262,18 @@ export class Room {
       case "next": {
         // Ignore stale "ended" reports for a song we already moved past.
         if (m.videoId && m.videoId !== d.videoId) return;
+        // A plain song-ended report is a vote, not an advance: hold until every
+        // connected listener has finished, so a slower listener's ads don't get
+        // cut off. Manual skip and the client's grace-timeout force bypass the wait.
+        if (!m.manual && !m.force) {
+          let att = {};
+          try { att = ws.deserializeAttachment() || {}; } catch {}
+          att.done = d.videoId;
+          ws.serializeAttachment(att);
+          const socks = this.state.getWebSockets();
+          const done = socks.filter((w) => { try { return w.deserializeAttachment()?.done === d.videoId; } catch { return false; } }).length;
+          if (done < socks.length) return; // not everyone yet → hold
+        }
         const skipped = d.title;
         this.advance();
         await this.radioFill(); // radio on + queue ran dry → top it back up
