@@ -2,7 +2,7 @@
 // One Durable Object per room holds the authoritative playback state and fans
 // changes out to every connected client over WebSockets.
 
-import { capLog, parsePlaylistVideoIds, parseSearchResults, cleanTrackTitle, pickBestLyric, lyricKey, parseLrclibId } from "../public/lib.js";
+import { capLog, parsePlaylistVideoIds, parseSearchResults, parseChannelVideos, parseChannelId, parseYtMusicSongs, cleanTrackTitle, pickBestLyric, lyricKey, parseLrclibId } from "../public/lib.js";
 
 const LYRICS_UA = { "user-agent": "Vibin (+https://github.com/moonkit02/my-claude-skill)" };
 
@@ -28,6 +28,37 @@ async function searchFirst(q) {
   return { items: parseSearchResults(await r.text(), 30) };
 }
 
+// Public WEB_REMIX (YouTube Music web) innertube key. Rotates rarely; the
+// youtube.com fallback below covers it if it ever stops working.
+const YTM_KEY = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
+
+// Songs from an artist channel, YouTube Music first. YTM has the clean released
+// tracks (no tutorials / 1-hour loops), but only via its youtubei API — so we get
+// the channel's browseId from youtube.com/@handle, then browse YTM for the "Top
+// songs" + "Videos" shelves. Falls back to the channel's youtube.com uploads if
+// YTM yields nothing (key rotated, no music page, etc.).
+async function channelSongs(handle) {
+  if (!/^[A-Za-z0-9_.-]{1,60}$/.test(handle)) return { items: [] }; // handle only → no arbitrary fetch
+  const r = await fetch(`https://www.youtube.com/@${handle}/videos?hl=en`, { headers: YT_UA });
+  if (!r.ok) return { items: [] };
+  const html = await r.text();
+  const { browseId, author } = parseChannelId(html);
+  if (browseId) {
+    try {
+      const yr = await fetch(`https://music.youtube.com/youtubei/v1/browse?key=${YTM_KEY}&prettyPrint=false`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...YT_UA },
+        body: JSON.stringify({ context: { client: { clientName: "WEB_REMIX", clientVersion: "1.20240101.01.00", hl: "en" } }, browseId }),
+      });
+      if (yr.ok) {
+        const songs = parseYtMusicSongs(await yr.text(), author, 60);
+        if (songs.length) return { items: songs, source: "ytmusic" };
+      }
+    } catch {}
+  }
+  return { items: parseChannelVideos(html, 40), source: "youtube" }; // fallback: channel uploads
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -46,6 +77,11 @@ export default {
       const q = (url.searchParams.get("q") || "").slice(0, 80).trim();
       if (!q) return Response.json({ items: [] });
       try { return Response.json(await searchFirst(q)); } catch { return Response.json({ items: [] }); }
+    }
+    if (url.pathname === "/channel") {
+      const handle = (url.searchParams.get("handle") || "").replace(/^@/, "").slice(0, 60);
+      if (!handle) return Response.json({ items: [] });
+      try { return Response.json(await channelSongs(handle)); } catch { return Response.json({ items: [] }); }
     }
     if (url.pathname === "/lyrics/set" && req.method === "POST") {
       const b = await req.json().catch(() => ({}));
@@ -235,10 +271,13 @@ export class Room {
         d.updatedAt = Date.now();
         this.logActivity(ws, "paused");
         break;
-      case "seek":
+      case "seek": {
         d.time = Number(m.time) || 0;
         d.updatedAt = Date.now();
+        const s = Math.max(0, Math.round(d.time));
+        this.logActivity(ws, "scrubbed", `to ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`);
         break;
+      }
       case "enqueue": {
         const videoId = String(m.videoId || "").slice(0, 16);
         if (!videoId) return;
@@ -278,6 +317,23 @@ export class Room {
         this.advance();
         await this.radioFill(); // radio on + queue ran dry → top it back up
         if (m.manual) this.logActivity(ws, "skipped", skipped); // song-ended auto-next isn't logged
+        break;
+      }
+      case "enqueue_ids": {
+        // Bulk add from a channel/pick — titles already resolved client-side, so no
+        // per-item oEmbed lookup. Ids are validated; the rest is length-capped.
+        const items = Array.isArray(m.items) ? m.items.slice(0, 100) : [];
+        let added = 0, who = "";
+        for (const it of items) {
+          const videoId = String(it?.videoId || "");
+          if (!/^[\w-]{11}$/.test(videoId)) continue;
+          who = who || String(it.author || "").slice(0, 100);
+          d.queue.push({ videoId, title: String(it.title || videoId).slice(0, 200), author: String(it.author || "").slice(0, 100) });
+          added++;
+        }
+        if (!added) return;
+        if (d.videoId == null) this.advance(); // nothing playing → start now
+        this.logActivity(ws, "added", `${added} song${added > 1 ? "s" : ""}${who ? ` from ${who}` : ""}`);
         break;
       }
       case "reorder": {
