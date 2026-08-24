@@ -37,6 +37,91 @@ export function parsePlaylistVideoIds(html, cap = 50) {
   return ids.slice(0, cap);
 }
 
+// Parse a YouTube search-results page into [{videoId, title, author}] for a pick
+// list. Each result is a "videoRenderer" block; we take id + title + channel from
+// it. ponytail: regex on HTML, tolerant of missing author, capped.
+export function parseSearchResults(html, cap = 10) {
+  const out = [], seen = new Set();
+  const dec = (s) => { try { return JSON.parse('"' + s + '"'); } catch { return s; } };
+  const re = /"videoRenderer":\{([\s\S]*?)(?="videoRenderer":\{|$)/g;
+  let m;
+  while ((m = re.exec(html)) && out.length < cap) {
+    const c = m[1];
+    const vid = c.match(/"videoId":"([\w-]{11})"/);
+    const title = c.match(/"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"/);
+    if (!vid || !title || seen.has(vid[1])) continue;
+    const author = c.match(/"ownerText":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"/);
+    seen.add(vid[1]);
+    out.push({ videoId: vid[1], title: dec(title[1]), author: author ? dec(author[1]) : "" });
+  }
+  return out;
+}
+
+// "/artist <@handle | music.youtube.com/@handle | youtube.com/@handle>" → the bare
+// handle ("ReoMusicCH"); no @handle in the arg → "" (not channel mode).
+export function parseArtistCmd(q) {
+  const m = /^\/artist\s+(.+)$/i.exec(q || "");
+  if (!m) return "";
+  const h = m[1].match(/@([A-Za-z0-9_.-]+)/);
+  return h ? h[1] : "";
+}
+// Parse a youtube.com/@handle/videos page (new "lockupViewModel" layout) into
+// [{videoId, title, author}]. author is the channel name so rows read naturally.
+// ponytail: regex on HTML, same fragility as parseSearchResults; capped.
+export function parseChannelVideos(html, cap = 40) {
+  const dec = (s) => { try { return JSON.parse('"' + s + '"'); } catch { return s; } };
+  const chan = html.match(/"channelMetadataRenderer":\{"title":"((?:[^"\\]|\\.)*)"/);
+  const author = chan ? dec(chan[1]) : "";
+  const out = [], seen = new Set();
+  const re = /"lockupViewModel":\{([\s\S]*?)(?="lockupViewModel":\{|$)/g;
+  let m;
+  while ((m = re.exec(html)) && out.length < cap) {
+    const c = m[1];
+    const vid = c.match(/"contentId":"([A-Za-z0-9_-]{11})"/);
+    const title = c.match(/"lockupMetadataViewModel":\{"title":\{"content":"((?:[^"\\]|\\.)*)"/);
+    if (!vid || !title || seen.has(vid[1])) continue;
+    seen.add(vid[1]);
+    out.push({ videoId: vid[1], title: dec(title[1]), author });
+  }
+  return out;
+}
+
+// Pull the channel's browseId (UC…) and display name from a youtube.com/@handle
+// page — the browseId is what YouTube Music's browse API keys off.
+export function parseChannelId(html) {
+  const dec = (s) => { try { return JSON.parse('"' + s + '"'); } catch { return s; } };
+  const id = html.match(/"externalId":"(UC[A-Za-z0-9_-]+)"/);
+  const name = html.match(/"channelMetadataRenderer":\{"title":"((?:[^"\\]|\\.)*)"/);
+  return { browseId: id ? id[1] : "", author: name ? dec(name[1]) : "" };
+}
+
+// Extract playable songs from a YT Music youtubei "browse" response (a channel/
+// artist page): the "Top songs" list rows + the "Videos" carousel. Album cards
+// (browseEndpoint, not a single video) are skipped. Deduped by id, capped.
+export function parseYtMusicSongs(json, author = "", cap = 60) {
+  let d; try { d = typeof json === "string" ? JSON.parse(json) : json; } catch { return []; }
+  const out = [], seen = new Set();
+  const firstWatchId = (o) => { let id = "";
+    (function w(x) { if (id || !x || typeof x !== "object") return;
+      if (Array.isArray(x)) return x.forEach(w);
+      if (x.watchEndpoint?.videoId) { id = x.watchEndpoint.videoId; return; }
+      for (const k in x) w(x[k]); })(o);
+    return id; };
+  const push = (videoId, title) => {
+    if (!/^[\w-]{11}$/.test(videoId || "") || !title || seen.has(videoId) || out.length >= cap) return;
+    seen.add(videoId); out.push({ videoId, title, author });
+  };
+  (function walk(x) { if (!x || typeof x !== "object") return;
+    if (Array.isArray(x)) return x.forEach(walk);
+    const r = x.musicResponsiveListItemRenderer;
+    if (r) push(firstWatchId(r), r.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]?.text);
+    const t = x.musicTwoRowItemRenderer;
+    if (t?.navigationEndpoint?.watchEndpoint?.videoId) push(t.navigationEndpoint.watchEndpoint.videoId, t.title?.runs?.[0]?.text);
+    for (const k in x) walk(x[k]);
+  })(d);
+  return out;
+}
+
 // Best-effort cleanup of a YouTube title into something a lyrics DB can match:
 // drop bracketed junk and trailing tags like "(Official Video)", "[MV]", "feat. …".
 export function cleanTrackTitle(title) {

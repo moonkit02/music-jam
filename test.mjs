@@ -1,7 +1,17 @@
 // Runnable check for the two pieces of non-trivial pure logic.
 // Run: node test.mjs
-import { parseVideoId, parsePlaylistId, parsePlaylistVideoIds, cleanTrackTitle, parseLrc, activeLineIndex, pickBestLyric, lyricKey, parseLrclibId, expectedTime, capLog } from "./public/lib.js";
+import { parseVideoId, parsePlaylistId, parsePlaylistVideoIds, parseSearchResults, cleanTrackTitle, parseLrc, activeLineIndex, pickBestLyric, lyricKey, parseLrclibId, expectedTime, capLog, parseArtistCmd, parseChannelVideos, parseChannelId, parseYtMusicSongs } from "./public/lib.js";
 import assert from "node:assert/strict";
+
+// --- parseSearchResults (id/title/author per renderer, dedup, cap) ---
+{
+  const s = '"videoRenderer":{"videoId":"aaaaaaaaaaa","title":{"runs":[{"text":"Song A \\u0026 more"}]},"ownerText":{"runs":[{"text":"Artist A"}]}}"videoRenderer":{"videoId":"bbbbbbbbbbb","title":{"runs":[{"text":"Song B"}]},"ownerText":{"runs":[{"text":"Artist B"}]}}';
+  assert.deepEqual(parseSearchResults(s), [
+    { videoId: "aaaaaaaaaaa", title: "Song A & more", author: "Artist A" },
+    { videoId: "bbbbbbbbbbb", title: "Song B", author: "Artist B" },
+  ]);
+  assert.equal(parseSearchResults(s, 1).length, 1); // cap
+}
 
 // --- parseVideoId ---
 assert.equal(parseVideoId("dQw4w9WgXcQ"), "dQw4w9WgXcQ");
@@ -71,5 +81,72 @@ assert.equal(parseLrclibId("https://lrclib.net/tracks/36317191"), "36317191");
 assert.equal(parseLrclibId("https://lrclib.net/api/get/36317191"), "36317191");
 assert.equal(parseLrclibId("36317191"), "36317191"); // bare id
 assert.equal(parseLrclibId("not a url"), null);
+
+// --- ad/stall episode counter (mirrors the tick logic in index.html) ---
+// One count per frozen episode, regardless of how many ticks it lasts.
+function countAds(times) { // times = getCurrentTime() per tick while playing
+  let last = 0, stall = 0, ads = 0;
+  for (const t of times) {
+    if (t > last + 0.05) stall = 0;
+    else if (t > 0 && ++stall === 2) ads++;
+    last = t;
+  }
+  return ads;
+}
+assert.equal(countAds([1, 1.4, 1.8, 2.2]), 0);          // smooth playback, no ad
+assert.equal(countAds([1, 1, 1, 1.4, 1.8]), 1);         // one 3-tick freeze = one ad
+assert.equal(countAds([1, 2, 2, 2, 3, 3, 3, 4]), 2);    // two separate freezes
+assert.equal(countAds([1, 1]), 0);                       // single frozen tick is not enough
+
+// --- song-end quorum (mirrors the "next" vote logic in worker.js) ---
+// advance only when every socket has voted for the current video; manual/force bypass.
+function shouldAdvance(votesForThisVid, totalSockets, { manual = false, force = false } = {}) {
+  if (manual || force) return true;
+  return votesForThisVid >= totalSockets;
+}
+assert.equal(shouldAdvance(1, 1), true);                    // solo listener → immediate
+assert.equal(shouldAdvance(2, 3), false);                   // 2 of 3 finished → hold
+assert.equal(shouldAdvance(3, 3), true);                    // everyone finished → go
+assert.equal(shouldAdvance(1, 3, { force: true }), true);   // grace-timeout forces past stragglers
+assert.equal(shouldAdvance(1, 3, { manual: true }), true);  // manual skip ignores the wait
+
+// --- /artist command: pull a channel handle from arg (bare, or a channel URL) ---
+assert.equal(parseArtistCmd("/artist @ReoMusicCH"), "ReoMusicCH");
+assert.equal(parseArtistCmd("/artist https://music.youtube.com/@ReoMusicCH"), "ReoMusicCH");
+assert.equal(parseArtistCmd("/artist https://www.youtube.com/@ReoMusicCH"), "ReoMusicCH");
+assert.equal(parseArtistCmd("/artist Reo"), "");         // no @handle → not channel mode
+assert.equal(parseArtistCmd("lofi"), "");                // no command → plain search
+
+// --- parseChannelVideos: lockupViewModel layout (id + title + channel author) ---
+const chanHtml = `pre"channelMetadataRenderer":{"title":"Reo","x":1}mid`
+  + `"lockupViewModel":{"a":1,"contentId":"gV2Av0y0WLI","metadata":{"lockupMetadataViewModel":{"title":{"content":"Lively Beach Town"}}}}`
+  + `"lockupViewModel":{"contentId":"ABCDEFGHIJK","metadata":{"lockupMetadataViewModel":{"title":{"content":"Second Song"}}}}`;
+const chanItems = parseChannelVideos(chanHtml);
+assert.equal(chanItems.length, 2);
+assert.deepEqual(chanItems[0], { videoId: "gV2Av0y0WLI", title: "Lively Beach Town", author: "Reo" });
+assert.equal(chanItems[1].videoId, "ABCDEFGHIJK");
+
+// --- parseChannelId: browseId + name from a youtube.com channel page ---
+assert.deepEqual(
+  parseChannelId(`z"channelMetadataRenderer":{"title":"Reo"}z"externalId":"UC7diLYdTVp-jYqSIo--SJBA"z`),
+  { browseId: "UC7diLYdTVp-jYqSIo--SJBA", author: "Reo" });
+
+// --- parseYtMusicSongs: songs from list rows + video cards, albums skipped ---
+const ytm = {
+  contents: [
+    { musicResponsiveListItemRenderer: {
+        flexColumns: [{ musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: "Starry Night" }] } } }],
+        overlay: { play: { navigationEndpoint: { watchEndpoint: { videoId: "w_PcZWLjYoQ" } } } } } },
+    { musicTwoRowItemRenderer: { title: { runs: [{ text: "A Music Video" }] },
+        navigationEndpoint: { watchEndpoint: { videoId: "vYLUZNhT-oY" } } } },
+    { musicTwoRowItemRenderer: { title: { runs: [{ text: "An Album" }] }, // album card → no videoId → skipped
+        navigationEndpoint: { browseEndpoint: { browseId: "MPREb_xxx" } } } },
+  ],
+};
+const ytmSongs = parseYtMusicSongs(ytm, "Reo");
+assert.equal(ytmSongs.length, 2);                        // album card skipped
+assert.deepEqual(ytmSongs[0], { videoId: "w_PcZWLjYoQ", title: "Starry Night", author: "Reo" });
+assert.equal(ytmSongs[1].videoId, "vYLUZNhT-oY");
+assert.deepEqual(parseYtMusicSongs("not json", "Reo"), []); // bad input → empty, no throw
 
 console.log("ok");

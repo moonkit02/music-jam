@@ -24,6 +24,20 @@ input[type=text] { font: inherit; }
 .search { flex: 1; max-width: 640px; margin: 0 auto; position: relative; }
 .search input { width: 100%; padding: 10px 14px 10px 40px; border-radius: 20px; border: 1px solid #303030; background: #121212; color: #fff; }
 .search::before { content:"\1F50D"; position:absolute; left:14px; top:50%; transform:translateY(-50%); opacity:.5; } /* 🔍 as escape: survives any file encoding */
+.results { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 50; background: #1c1c1c; border: 1px solid #333; border-radius: 12px; overflow-y: auto; max-height: 62vh; box-shadow: 0 12px 40px #000b; }
+.results.hidden { display: none; }
+.res-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; }
+.res-row:hover { background: var(--hover); }
+.res-row img { width: 56px; height: 32px; object-fit: cover; border-radius: 4px; flex: none; }
+.res-ic { width: 56px; text-align: center; font-size: 20px; flex: none; }
+.res-meta { min-width: 0; flex: 1; }
+.res-t { color: #fff; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.res-a { color: var(--sub); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.res-add { flex: none; color: #3ecf6b; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.res-row.is-added { cursor: default; }
+.res-row.is-added .res-t { opacity: .55; }
+.res-radio { border-bottom: 1px solid #333; }
+.res-note { padding: 12px; color: var(--sub); font-size: 13px; text-align: center; }
 #users { color: #8be9a6; white-space: nowrap; }
 
 /* 3. main 3 columns */
@@ -46,7 +60,8 @@ nav .roommeta code { color: #fff; }
 .art-wrap { position: relative; width: min(46vh, 440px); max-width: 100%; }
 .art { width: 100%; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #1a1a1a; box-shadow: 0 8px 40px #000a; }
 .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.art.empty { display: grid; place-items: center; color: #555; text-align: center; padding: 20px; }
+.art.empty { display: grid; place-items: center; color: #999; text-align: center; padding: 20px; line-height: 1.6; }
+.art.empty .art-hint { color: #555; font-size: 13px; }
 /* live player overlays the art; hidden (but still playing audio) until video-on. */
 .art-video { position: absolute; inset: 0; border-radius: 8px; overflow: hidden; background: #000; opacity: 0; pointer-events: none; z-index: 0; }
 .art-video iframe { width: 100%; height: 100%; display: block; }
@@ -55,6 +70,8 @@ body.video-on .art-video { opacity: 1; z-index: 2; }
 #vidtoggle:hover { background: rgba(0,0,0,.8); }
 #vidtoggle.on { background: var(--red); border-color: var(--red); color: #fff; }
 .nowmeta { text-align: center; width: min(46vh, 440px); max-width: 100%; } /* same width as .art */
+.radio-badge { margin-top: 10px; display: inline-block; padding: 4px 12px; border-radius: 999px; background: #1a1a1a; border: 1px solid #333; color: var(--sub); font-size: 12px; }
+.radio-badge:empty { display: none; }
 /* title marquee: viewport is the full album width; JS adds .scroll only when the text overflows */
 .nowmeta .t { font-size: 20px; font-weight: 600; width: 100%; overflow: hidden; white-space: nowrap; }
 .nowmeta .t .mq-track { display: inline-flex; will-change: transform; }
