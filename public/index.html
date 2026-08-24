@@ -34,7 +34,11 @@
 
     <div class="stage">
       <div class="now-main">
-        <div class="art empty" id="art">Queue a track to start the jam</div>
+        <div class="art-wrap">
+          <div class="art empty" id="art">Queue a track to start the jam</div>
+          <div class="art-video" id="artvideo"><div id="yt"></div></div>
+          <button id="vidtoggle" title="Show video">🎬</button>
+        </div>
         <div class="nowmeta">
           <div class="t" id="nowtitle">Nothing playing</div>
           <div class="a" id="nowauthor"></div>
@@ -95,8 +99,6 @@
     <button data-mtab="queue"><span class="ic">≡</span>Up next</button>
     <button data-mtab="chat"><span class="ic">💬</span>Chat</button>
   </nav>
-
-  <div class="hidden-player"><div id="yt"></div></div>
 
   <div id="gate"><div><div class="gate-title">🎷 ✨Vibin✨</div><button id="gatebtn">Tap to start the jam</button><div class="gate-sub">browsers need one tap before they'll play audio</div></div></div>
 
@@ -396,6 +398,22 @@ $("muteall").onclick = () => {
   applyMute(); updateMuteUI();
 };
 
+// per-user video toggle: reveal the (already-playing) iframe over the album art.
+// Local only — never sent to others; audio keeps running either way.
+let videoOn = localStorage.vibinVideo === "1";
+function applyVideoUI() {
+  document.body.classList.toggle("video-on", videoOn);
+  $("vidtoggle").classList.toggle("on", videoOn);
+  $("vidtoggle").title = videoOn ? "Hide video" : "Show video";
+  $("vidtoggle").style.display = server.videoId ? "flex" : "none";
+}
+$("vidtoggle").onclick = () => {
+  videoOn = !videoOn;
+  localStorage.vibinVideo = videoOn ? "1" : "0";
+  applyVideoUI();
+};
+applyVideoUI();
+
 // ---- add / queue ----
 function add() {
   const val = $("url").value;
@@ -438,6 +456,7 @@ function updateNowPlaying() {
   $("nptitle").textContent = has ? (server.title || server.videoId) : "—";
   $("npauthor").textContent = has ? (server.author || "") : "";
   updateMuteUI();
+  $("vidtoggle").style.display = has ? "flex" : "none";
   loadLyrics();
 }
 

@@ -43,9 +43,17 @@ nav .roommeta code { color: #fff; }
 .now-main { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; flex: 0 0 auto; }
 .now-lyrics { flex: 0 1 460px; min-width: 0; height: min(64vh, 460px); display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .now-lyrics.hidden { display: none; } /* no song → collapse the panel so the art centers */
-.art { width: min(46vh, 440px); aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #1a1a1a; box-shadow: 0 8px 40px #000a; }
+.art-wrap { position: relative; width: min(46vh, 440px); max-width: 100%; }
+.art { width: 100%; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #1a1a1a; box-shadow: 0 8px 40px #000a; }
 .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .art.empty { display: grid; place-items: center; color: #555; text-align: center; padding: 20px; }
+/* live player overlays the art; hidden (but still playing audio) until video-on. */
+.art-video { position: absolute; inset: 0; border-radius: 8px; overflow: hidden; background: #000; opacity: 0; pointer-events: none; z-index: 0; }
+.art-video iframe { width: 100%; height: 100%; display: block; }
+body.video-on .art-video { opacity: 1; z-index: 2; }
+#vidtoggle { position: absolute; top: 8px; right: 8px; z-index: 3; display: none; width: 34px; height: 34px; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid #333; background: rgba(0,0,0,.55); color: #ddd; font-size: 15px; cursor: pointer; }
+#vidtoggle:hover { background: rgba(0,0,0,.8); }
+#vidtoggle.on { background: var(--red); border-color: var(--red); color: #fff; }
 .nowmeta { text-align: center; width: min(46vh, 440px); max-width: 100%; } /* same width as .art */
 /* title marquee: viewport is the full album width; JS adds .scroll only when the text overflows */
 .nowmeta .t { font-size: 20px; font-weight: 600; width: 100%; overflow: hidden; white-space: nowrap; }
@@ -134,7 +142,6 @@ body.out-of-list #queuepane { box-shadow: inset 0 0 0 2px rgba(255,45,45,.7), in
 .scrub input::-webkit-slider-thumb, #vol::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; border-radius:50%; background:#fff; cursor:pointer; }
 .right-tools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; color: var(--sub); }
 #vol { width: 90px; }
-.hidden-player { position: absolute; width: 320px; height: 180px; left: -9999px; top: -9999px; overflow: hidden; }
 
 /* 9. nav extras (join row, room code, nickname, user list) */
 .joinrow { display: flex; gap: 6px; padding: 4px 4px 0; }
@@ -195,7 +202,7 @@ body.out-of-list #queuepane { box-shadow: inset 0 0 0 2px rgba(255,45,45,.7), in
   .stage { flex-direction: column; align-items: center; padding: 20px 16px; justify-content: flex-start; gap: 16px; }
   /* one shared centered column so art / title / mute / lyrics all line up on the same axis */
   .now-main, .now-lyrics { width: min(46vh, 82vw); max-width: 100%; }
-  .stage .art, .stage .nowmeta { width: 100%; flex: 0 0 auto; }
+  .stage .art-wrap, .stage .nowmeta { width: 100%; flex: 0 0 auto; }
   .mute-controls { justify-content: center; flex-wrap: wrap; } /* stay centered even if buttons wrap */
   .now-lyrics { flex: 1 1 0; min-height: 0; height: auto; }
 
