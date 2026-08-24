@@ -118,7 +118,7 @@
   </div></div>
 
 <script type="module">
-import { parseVideoId, parsePlaylistId, parseLrc, activeLineIndex, expectedTime } from "./lib.js";
+import { parseVideoId, parsePlaylistId, parseLrc, activeLineIndex, expectedTime, parseArtistCmd } from "./lib.js";
 
 const $ = (id) => document.getElementById(id);
 const fmt = (s) => (isFinite(s) && s >= 0 ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}` : "0:00");
@@ -439,8 +439,18 @@ $("muteall").onclick = () => {
 };
 
 // ---- add / queue ----
-function add() {
+async function add() {
   const val = $("url").value;
+  const handle = parseArtistCmd(val); // "/artist @handle" on Enter → shuffle the channel and play
+  if (handle) {
+    $("url").value = ""; hideResults();
+    let j = { items: [] };
+    try { j = await (await fetch(`/channel?handle=${encodeURIComponent(handle)}`)).json(); } catch {}
+    const items = (j.items || []).map((v) => ({ videoId: v.videoId, title: v.title, author: v.author }));
+    for (let i = items.length - 1; i > 0; i--) { const k = Math.floor(Math.random() * (i + 1)); [items[i], items[k]] = [items[k], items[i]]; } // Fisher-Yates
+    if (items.length) send({ type: "enqueue_ids", items });
+    return;
+  }
   const list = parsePlaylistId(val); // playlist link → server expands it
   if (list) { send({ type: "enqueue_playlist", list }); $("url").value = ""; return; }
   const id = parseVideoId(val);
@@ -463,7 +473,7 @@ $("url").addEventListener("input", () => {
 });
 
 // ---- keyword → scrollable pick list (radio option on top; multi-add) ----
-let lastQ = "";
+let lastQ = "", radioQ = ""; // lastQ: raw input (supersede check); radioQ: cleaned keyword for radio/top row
 // A song is "Added" if it's in the room's playlist (now-playing or queued), not a local click log.
 const isQueued = (vid) => server.videoId === vid || (server.queue || []).some((q) => q.videoId === vid);
 const radioRowHTML = (q) => `<div class="res-row res-radio" data-radio="1"><span class="res-ic">📻</span><div class="res-meta"><div class="res-t">Start radio: ${esc(q)}</div><div class="res-a">auto-play matching songs</div></div></div>`;
@@ -471,14 +481,23 @@ const resRowHTML = (v) => { const a = isQueued(v.videoId); return `<div class="r
 
 async function showResults(q) {
   lastQ = q;
+  // "/artist @handle" (or a music/youtube channel link) → that channel's songs only.
+  const handle = parseArtistCmd(q);
   const box = $("results");
-  box.innerHTML = radioRowHTML(q) + `<div class="res-note">Searching…</div>`;
+  if (/^\/artist\b/i.test(q) && !handle) { // command typed, but no channel yet
+    box.innerHTML = `<div class="res-note">Paste the channel, e.g. /artist @ReoMusicCH</div>`;
+    box.classList.remove("hidden"); return;
+  }
+  radioQ = handle || q; // radio + top row use the handle/keyword, not the raw command
+  box.innerHTML = radioRowHTML(radioQ) + `<div class="res-note">Searching…</div>`;
   box.classList.remove("hidden");
   let j = { items: [] };
-  try { j = await (await fetch(`/search?q=${encodeURIComponent(q)}`)).json(); } catch {}
+  const ep = handle ? `/channel?handle=${encodeURIComponent(handle)}` : `/search?q=${encodeURIComponent(q)}`;
+  try { j = await (await fetch(ep)).json(); } catch {}
   if (box.classList.contains("hidden") || lastQ !== q) return; // closed or a newer search superseded this
   const rows = (j.items || []).map(resRowHTML).join(""); // render all; box scrolls natively
-  box.innerHTML = radioRowHTML(q) + (rows || `<div class="res-note">No results</div>`);
+  const empty = handle ? `<div class="res-note">No songs on @${esc(handle)}</div>` : `<div class="res-note">No results</div>`;
+  box.innerHTML = radioRowHTML(radioQ) + (rows || empty);
 }
 function hideResults() { const b = $("results"); b.classList.add("hidden"); b.innerHTML = ""; }
 // Keep the open pick list in sync with the playlist: rows already queued show
@@ -493,7 +512,7 @@ function refreshResultRows() {
 }
 $("results").onclick = (e) => {
   const row = e.target.closest(".res-row"); if (!row) return;
-  if (row.dataset.radio) { send({ type: "radio", query: lastQ }); $("url").value = ""; hideResults(); return; } // radio switches station → close
+  if (row.dataset.radio) { send({ type: "radio", query: radioQ }); $("url").value = ""; hideResults(); return; } // radio switches station → close
   const vid = row.dataset.vid; if (!vid || isQueued(vid)) return; // already in the playlist → deactivated
   send({ type: "enqueue", videoId: vid });
   row.classList.add("is-added");
